@@ -1,0 +1,49 @@
+{
+  "$schema": "https://gollm-service.schema",
+  "name": "gollm-service",
+  "version": "0.2.0",
+  "description": "Universal OpenAI-compatible LLM Microservice for OpenClaw & Hermes",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3001
+  },
+  "playwright": {
+    "browser": "chromium",
+    "headless": false,
+    "userDataDir": "~/.openclaw/gollm-playwright-profile",
+    "stealth": true
+  },
+  "gemini": {
+    "url": "https://gemini.google.com/app",
+    "promptPrefix": "",
+    "thinkingLog": true,
+    "autoLogin": true
+  },
+  "selectors": {
+    "input": [
+      ".ql-editor",
+      ".ProseMirror",
+      "rich-textarea",
+      "div[role=\"textbox\"][contenteditable=\"true\"]",
+      "div[contenteditable=\"true\"]",
+      "textarea"
+    ],
+    "send": [
+      "button[aria-label*=\"Send\"]",
+      "button[aria-label*=\"傳送\"]",
+      "button[aria-label*=\"發送\"]"
+    ],
+    "response": [
+      "model-response .model-response-text",
+      "model-response",
+      "message-content",
+      ".response-container-content"
+    ]
+  },
+  "limits": {
+    "maxResponseTimeMs": 300000,
+    "pollIntervalMs": 500,
+    "stableThreshold": 10,
+    "maxRetries": 3
+  }
+}

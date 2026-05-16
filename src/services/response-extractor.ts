@@ -1,0 +1,140 @@
+/**
+ * Response Extractor
+ *
+ * Polls the Gemini Web DOM until a stable response is detected.
+ * Uses Playwright-native polling via repeated page.evaluate calls.
+ */
+
+import { type Page } from "playwright";
+import { SELECTORS } from "../utils/selectors.js";
+import { POLLING, LIMITS } from "../utils/timings.js";
+
+export interface WaitForResponseResult {
+  text: string;
+  status: "ok" | "timeout";
+  stable: boolean;
+}
+
+const SELECTOR_POOL = SELECTORS.response.join(", ");
+
+/**
+ * Single-shot DOM check — runs in browser, returns current response text or null.
+ * Returns null if still waiting; returns text (possibly empty string) if done/error.
+ */
+function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs: number): string {
+  const safeStr = JSON.stringify(oldText);
+  return `(function(){
+    var _S = window.__pollState = window.__pollState || {lastText:'',stableCount:0,startTime:Date.now(),done:false,result:''};
+    if (_S.done) return _S.result;
+    if (Date.now() - _S.startTime > ${timeoutMs}) { _S.done = true; _S.result = ''; return ''; }
+
+    var stopBtn = document.querySelector('button[aria-label*="Stop"], button[aria-label*="停止"], button[aria-label*="中斷"]');
+    var isGenerating = !!(stopBtn && stopBtn.offsetHeight > 0);
+
+    // Try primary selectors
+    var b = document.querySelectorAll('${sel}');
+    var ct = '';
+    if (b.length > 0) {
+      var last = b[b.length - 1];
+      var c = last.closest('model-response') || last.closest('.markdown') || last.closest('.model-response-text') || last.parentElement || last;
+      ct = (c ? c.innerText : '') || '';
+    }
+
+    // Strip UI boilerplates at the beginning of the response
+    ct = ct.replace(/^(?:顯示程式碼\\s*|Show code\\s*)?(?:顯示思路\\s*|Show thought process\\s*)?(?:Gemini 說了|Gemini said|Gemini says|Gemini)\\s*/i, '').trim();
+
+    // Fallback: body text stripped of thinking indicator and input
+    if (!ct || ct === ${safeStr}) {
+      var body = document.body ? document.body.innerText : '';
+      ct = body
+        .replace(/思考型[\\s\\S]*/gi, '')
+        .replace(/Gemini[\\s\\S]*輸入[^\\n]*/gi, '')
+        .replace(/停止回覆[^\\n]*/gi, '')
+        .replace(/你說了[^\\n]*/gi, '')
+        .trim();
+      var inp = document.querySelector('.ql-editor,.ProseMirror,textarea,[contenteditable]');
+      if (inp) {
+        var inpT = (inp.innerText || '').trim();
+        if (inpT && ct.startsWith(inpT)) ct = ct.slice(inpT.length).trim();
+      }
+      ct = ct.replace(/^(?:顯示程式碼\\s*|Show code\\s*)?(?:顯示思路\\s*|Show thought process\\s*)?(?:Gemini 說了|Gemini said|Gemini says|Gemini)\\s*/i, '').trim();
+      if (ct === ${safeStr} || ct === '') ct = '';
+    }
+
+    if (ct && ct !== ${safeStr}) {
+      if (ct === _S.lastText && !isGenerating) { _S.stableCount++; }
+      else { _S.stableCount = 0; _S.lastText = ct; }
+      if (_S.stableCount >= ${stableThr}) { _S.done = true; _S.result = ct; }
+    } else { _S.stableCount = 0; }
+
+    // Return null = keep polling, return string = done (may be empty)
+    return _S.done ? _S.result : null;
+  })()`;
+}
+
+export async function waitForStableResponse(
+  page: Page,
+  baselineText: string
+): Promise<WaitForResponseResult> {
+  const timeoutMs = LIMITS.RESPONSE_TIMEOUT_MS;
+  const pollMs = POLLING.POLL_INTERVAL_MS;
+  const stableThreshold = POLLING.STABLE_THRESHOLD;
+
+  console.log(`[POLL] Starting (timeout=${timeoutMs}ms, poll=${pollMs}ms, stable=${stableThreshold})`);
+
+  // Reset stale state
+  await page.evaluate("window.__pollState = null;");
+
+  const checkFnStr = buildCheckFn(SELECTOR_POOL, baselineText, stableThreshold, timeoutMs);
+  const startTime = Date.now();
+  const deadline = startTime + timeoutMs;
+
+  // Keep polling until done or timeout
+  while (Date.now() < deadline) {
+    // Run the check function in the browser
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: string | null = await (page.evaluate(checkFnStr) as any);
+
+    if (result !== null) {
+      // Done (result may be empty string = no response found)
+      const elapsed = Date.now() - startTime;
+      await page.evaluate("window.__pollState = null;");
+      if (!result) {
+        console.log(`[POLL] Done but empty after ${elapsed}ms`);
+        return { text: '', status: 'timeout', stable: false };
+      }
+      console.log(`[POLL] Done after ${elapsed}ms, got ${result.length} chars`);
+      return { text: result, status: 'ok', stable: true };
+    }
+
+    // Still waiting — check again after poll interval
+    await page.waitForTimeout(pollMs);
+  }
+
+  // Timed out
+  const elapsed = Date.now() - startTime;
+  const result: string = await (page.evaluate("return window.__pollState ? window.__pollState.result : ''") as Promise<string>);
+  await page.evaluate("window.__pollState = null;");
+  console.log(`[POLL] TIMEOUT after ${elapsed}ms, result=${result ? result.length + 'chars' : 'empty'}`);
+  return { text: result || '', status: 'timeout', stable: false };
+}
+
+export async function captureBaseline(page: Page): Promise<string> {
+  const baseArgs = { sel: SELECTOR_POOL };
+
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const fn = new Function(
+    "args",
+    "var bubbles=document.querySelectorAll(args.sel);" +
+      "if(bubbles.length===0)return '';" +
+      "var target=bubbles[bubbles.length-1];" +
+      "var c=target.closest('model-response')||target.closest('.markdown')||target.closest('.model-response-text')||target.closest('[role=\"article\"]')||target.parentElement||target;" +
+      "return c?c.innerText:'';"
+  );
+
+  const result: string = await (page.evaluate(fn as any, baseArgs as any) as Promise<any>);
+
+  console.log(`[DEBUG captureBaseline] page URL: ${page.url()}`);
+
+  return result || "";
+}
