@@ -29,7 +29,7 @@ export interface HallucinationResult {
 
 /**
  * Parses text for Hermes-style tool calls: <call:plugin:method>{...}</call>
- * Also supports basic JSON code blocks as a fallback if instructed.
+ * Also supports standard <tool_call> JSON blocks.
  */
 export function parseToolCalls(rawText: string): ParsedToolCall[] {
   const toolCalls: ParsedToolCall[] = [];
@@ -40,14 +40,12 @@ export function parseToolCalls(rawText: string): ParsedToolCall[] {
     .replace(/```/g, '')
     .trim();
   
-  // Pattern 1: Hermes/OpenClaw XML-like format <call:domain:method>{args}</call>
-  const hermesPattern = /<call:([\w:]+)>([\s\S]*?)<\/call>/g;
+  // Pattern 1: Legacy OpenClaw/Hermes XML format <call:domain:method>{args}</call>
+  const callPattern = /<call:([\w:-]+)>([\s\S]*?)<\/call>/g;
   let match;
-  
-  while ((match = hermesPattern.exec(text)) !== null) {
+  while ((match = callPattern.exec(text)) !== null) {
     const fullMethod = match[1]; // e.g. "default_api:run_shell_command"
     const argsStr = match[2].trim();
-    
     toolCalls.push({
       id: `call_${Math.random().toString(36).substring(2, 11)}`,
       type: "function",
@@ -58,9 +56,28 @@ export function parseToolCalls(rawText: string): ParsedToolCall[] {
     });
   }
 
-  // Pattern 2: Generic Markdown JSON blocks if the text contains nothing else or is clearly a tool call
-  // This is a fallback and can be risky if the model is just showing code.
-  // Use with caution or only when text matches a specific "Action" pattern.
+  // Pattern 2: Standard Hermes <tool_call> JSON block format
+  const toolCallPattern = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  while ((match = toolCallPattern.exec(text)) !== null) {
+    try {
+      // The content inside <tool_call> should be a JSON object: {"name": "...", "arguments": {...}}
+      const jsonStr = match[1].trim();
+      const parsed = JSON.parse(jsonStr);
+      if (parsed.name) {
+        toolCalls.push({
+          id: `call_${Math.random().toString(36).substring(2, 11)}`,
+          type: "function",
+          function: {
+            name: parsed.name.replace(/:/g, '__'),
+            // if arguments is an object, stringify it (OpenAI expects stringified JSON)
+            arguments: typeof parsed.arguments === 'object' ? JSON.stringify(parsed.arguments) : (parsed.arguments || "{}")
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("[GoLLM Parser] Failed to parse <tool_call> JSON:", e);
+    }
+  }
   
   return toolCalls;
 }
