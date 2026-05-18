@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { executeGollmRPA, buildChatCompletionResponse } from "../agents/gollm-transport-stream.js";
-import { parseToolCalls, isPureToolCall } from "../utils/tool-parser.js";
+import { parseToolCalls, isPureToolCall, isNoReply } from "../utils/tool-parser.js";
 
 interface ChatBody {
   model?: string;
@@ -71,9 +71,17 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
       // 4. Tool Use Detection & Response Mapping (Universal Adapter)
       const toolCalls = parseToolCalls(result.text);
       const isPureTool = isPureToolCall(result.text, toolCalls);
+      const noReply = isNoReply(result.text);
 
       // If it's a pure tool call, content should be null (OpenAI spec)
-      const finalContent = isPureTool ? null : result.text;
+      // If it's a NO_REPLY response, strip any "Thinking" logs and strictly return "NO_REPLY"
+      let finalContent: string | null = result.text;
+      if (isPureTool) {
+        finalContent = null;
+      } else if (noReply) {
+        finalContent = "NO_REPLY";
+      }
+
       const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
 
       // ── [Phase 4] Hallucination Warning Metadata ───────────────────

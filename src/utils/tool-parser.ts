@@ -108,9 +108,32 @@ export function parseToolCalls(rawText: string): ParsedToolCall[] {
 export function isPureToolCall(text: string, toolCalls: ParsedToolCall[]): boolean {
   if (toolCalls.length === 0) return false;
   
-  // If the remaining text (after removing tags) is just whitespace/boilerplate, it's pure
-  const cleaned = text.replace(/<call:[\s\S]*?<\/call>/g, '').trim();
+  // Clean markdown and HTML escaping first
+  const sanitized = sanitizeWebRpaOutput(text);
+
+  // Remove ALL tool call tags to see if any actual conversational text remains
+  const cleaned = sanitized
+    .replace(/<call:[\s\S]*?<\/call>/g, '')
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+    .replace(/<invoke>[\s\S]*?<\/invoke>/g, '')
+    .trim();
+    
   return cleaned.length < 20; // Allow for some small boilerplate like "OK." or "Sure."
+}
+
+/**
+ * Checks if the response is essentially just a NO_REPLY signal,
+ * ignoring any "Thinking" logs or boilerplate.
+ */
+export function isNoReply(text: string): boolean {
+  // If the text ends with NO_REPLY (ignoring trailing whitespace)
+  if (/NO_REPLY\s*$/.test(text)) return true;
+  
+  // If the text contains NO_REPLY and everything after it is just whitespace
+  const sanitized = sanitizeWebRpaOutput(text);
+  if (/NO_REPLY\s*$/.test(sanitized)) return true;
+
+  return false;
 }
 
 /**
