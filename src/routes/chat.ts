@@ -5,12 +5,13 @@ import { parseToolCalls, isPureToolCall } from "../utils/tool-parser.js";
 interface ChatBody {
   model?: string;
   messages?: Array<{ role: string; content: string }>;
+  tools?: any[];
   stream?: boolean;
 }
 
 export async function chatRoute(fastify: FastifyInstance, opts: { config: any }) {
   fastify.post("/v1/chat/completions", async (request: FastifyRequest<{ Body: ChatBody }>, reply: FastifyReply) => {
-    const { messages = [] } = request.body || {};
+    const { messages = [], tools = [] } = request.body || {};
 
     // 1. Universal Message Filtering & Deduplication
     // For Stateful Web UI, we only want the LAST user message if it's a stateless replay
@@ -57,7 +58,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
     try {
       // 3. RPA Execution
       const result = await executeGollmRPA(
-        { messages: filteredMessages as any, thinkingLog },
+        { messages: filteredMessages as any, tools, thinkingLog },
         { thinkingLog, playwrightConfig }
       );
 

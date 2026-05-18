@@ -29,6 +29,7 @@ export interface GollmMessage {
 
 export interface GollmInput {
   messages: GollmMessage[];
+  tools?: any[];
   thinkingLog?: boolean;
 }
 
@@ -90,8 +91,16 @@ function isSameConversation(oldMsgs: GollmMessage[], newMsgs: GollmMessage[]): b
  * Formats a stateless message array into a stateful transcript for Web UI.
  * This is used when we detect a context shift (e.g. from Hermes).
  */
-function formatTranscript(messages: GollmMessage[]): string {
+function formatTranscript(messages: GollmMessage[], tools?: any[]): string {
   let transcript = "";
+  
+  if (tools && tools.length > 0) {
+    transcript += `[System Instructions - Available Tools]\n`;
+    transcript += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\n`;
+    transcript += `<tool_call>\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n</tool_call>\n\n`;
+    transcript += `Available Tools:\n${JSON.stringify(tools, null, 2)}\n\n`;
+  }
+
   for (const msg of messages) {
     const text = cleanContent(msg.content);
     if (!text) continue;
@@ -133,7 +142,7 @@ CRITICAL: You are connected to an execution environment (OpenClaw/Hermes). You D
   return transcript.trim();
 }
 
-function determinePromptStrategy(session: any, messages: GollmMessage[]): { text: string; requireNewChat: boolean } {
+function determinePromptStrategy(session: any, messages: GollmMessage[], tools?: any[]): { text: string; requireNewChat: boolean } {
   if (!messages || messages.length === 0) return { text: "", requireNewChat: false };
   
   const oldMsgs = session.getLastProcessedMessages() || [];
@@ -145,7 +154,7 @@ function determinePromptStrategy(session: any, messages: GollmMessage[]): { text
   }
   
   // Otherwise, re-send the whole context (Stateless to Stateful translation)
-  return { text: formatTranscript(messages), requireNewChat: true };
+  return { text: formatTranscript(messages, tools), requireNewChat: true };
 }
 
 // ─── Input injection ───────────────────────────────────────────────────────
@@ -400,7 +409,7 @@ export async function executeGollmRPA(
   options: { thinkingLog?: boolean; playwrightConfig?: any } = {}
 ): Promise<GollmOutput> {
   return await withMutex("gollm-rpa", async () => {
-    const { messages } = input;
+    const { messages, tools } = input;
     const { thinkingLog = true, playwrightConfig = {} } = options;
     const log = (msg: string) => { if (thinkingLog) console.log(`[GoLLM RPA] ${msg}`); };
 
@@ -409,7 +418,7 @@ export async function executeGollmRPA(
       userDataDir: playwrightConfig?.userDataDir,
     });
 
-    const promptData = determinePromptStrategy(session, messages);
+    const promptData = determinePromptStrategy(session, messages, tools);
     if (!promptData.text) throw new Error("No prompt extracted.");
 
     const page = await session.getPage();
