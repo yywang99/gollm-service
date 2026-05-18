@@ -20,9 +20,14 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
       const content = msg.content;
       if (typeof content !== 'string') return msg;
       
-      // Generic Metadata Filtering (Cleaner than before)
-      const metadataPattern = /(?:Conversation info \(untrusted metadata\):|Sender \(untrusted metadata\):|\[Metadata\])[\s\S]*$/gi;
-      const stripped = content.replace(metadataPattern, '').trim();
+      // Generic Metadata Filtering: Only strip the metadata lines themselves, not the entire trailing string.
+      // Often metadata blocks are enclosed in some markers or take up specific lines.
+      // We will remove known metadata headers but leave the rest of the text.
+      let stripped = content
+        .replace(/Conversation info \(untrusted metadata\):[^\n]*/gi, '')
+        .replace(/Sender \(untrusted metadata\):[^\n]*/gi, '')
+        .replace(/\[Metadata\][^\n]*/gi, '')
+        .trim();
       
       // If the message is JUST metadata after stripping, skip it
       if (stripped.length === 0 && content.length > 0) return null;
@@ -94,6 +99,14 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
         reply.raw.setHeader("Cache-Control", "no-cache");
         reply.raw.setHeader("Connection", "keep-alive");
 
+        // Format tool calls for streaming (must include 'index' for each tool call delta)
+        const streamToolCalls = toolCalls.map((tc, index) => ({
+          index,
+          id: tc.id,
+          type: "function",
+          function: tc.function,
+        }));
+
         const chunk = {
           id: `gollm-${Date.now()}`,
           object: "chat.completion.chunk",
@@ -105,7 +118,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
               delta: {
                 role: "assistant",
                 content: finalContent,
-                ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+                ...(streamToolCalls.length > 0 ? { tool_calls: streamToolCalls } : {}),
                 // Attach hallucination warning as a special content block
                 ...(hasUnconfirmedAction ? { _gollm_hallucination_warn: true } : {}),
               },
