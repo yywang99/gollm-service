@@ -31,8 +31,14 @@ export interface HallucinationResult {
  * Parses text for Hermes-style tool calls: <call:plugin:method>{...}</call>
  * Also supports basic JSON code blocks as a fallback if instructed.
  */
-export function parseToolCalls(text: string): ParsedToolCall[] {
+export function parseToolCalls(rawText: string): ParsedToolCall[] {
   const toolCalls: ParsedToolCall[] = [];
+  
+  // Clean markdown code blocks (e.g., ```xml, ```json, ```)
+  const text = rawText
+    .replace(/```(?:xml|json|html|javascript|ts|js|bash|sh)?\n?/gi, '')
+    .replace(/```/g, '')
+    .trim();
   
   // Pattern 1: Hermes/OpenClaw XML-like format <call:domain:method>{args}</call>
   const hermesPattern = /<call:([\w:]+)>([\s\S]*?)<\/call>/g;

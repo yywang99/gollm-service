@@ -125,6 +125,7 @@ CRITICAL: You are connected to an execution environment (OpenClaw/Hermes). You D
 - Do NOT apologize or say you cannot execute commands. (e.g. "I am an AI and cannot...")
 - Do NOT pretend to have completed the task without actually outputting the tool call tags.
 - Every action must be requested via the proper tool call syntax.
+- DO NOT wrap your tool calls in markdown code blocks (like \`\`\`xml). Output the raw tags directly into the text.
 `;
     }
   }
