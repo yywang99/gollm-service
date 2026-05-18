@@ -43,6 +43,15 @@ export interface GollmOutput {
 /**
  * Universal Content Extractor
  * Strips metadata from both OpenClaw and Hermes style messages.
+ * 
+ * OpenClaw metadata blocks look like:
+ *   Conversation info (untrusted metadata):
+ *   ```json
+ *   {"sender": "...", ...}
+ *   ```
+ * 
+ * We must strip these multi-line blocks surgically without destroying
+ * the actual user message content.
  */
 function cleanContent(content: string | any[]): string {
   let text = "";
@@ -52,12 +61,20 @@ function cleanContent(content: string | any[]): string {
     text = content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n");
   }
 
-  // 1. Strip OpenClaw Metadata
-  const openclawPattern = /(?:Conversation info \(untrusted metadata\):|Sender \(untrusted metadata\):)[\s\S]*$/gi;
-  text = text.replace(openclawPattern, '').trim();
+  // 1. Strip OpenClaw multi-line metadata blocks:
+  //    "Label (untrusted metadata):\n```json\n{...}\n```"
+  //    Also handles: "Label (untrusted, for context):\n```json\n{...}\n```"
+  const metadataBlockPattern = /[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\n```(?:json)?\n[\s\S]*?\n```/gi;
+  text = text.replace(metadataBlockPattern, '');
 
-  // 2. Strip generic [Metadata] markers if present
-  text = text.replace(/\[Metadata\][\s\S]*$/gi, '').trim();
+  // 2. Strip any remaining single-line metadata headers (safety net)
+  text = text.replace(/^[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):[^\n]*$/gim, '');
+
+  // 3. Strip generic [Metadata] single-line markers
+  text = text.replace(/^\[Metadata\][^\n]*$/gim, '');
+
+  // 4. Clean up resulting blank lines
+  text = text.replace(/\n{3,}/g, '\n\n').trim();
 
   return text;
 }
@@ -103,6 +120,8 @@ function formatTranscript(messages: GollmMessage[], tools?: any[]): string {
 
   for (const msg of messages) {
     const text = cleanContent(msg.content);
+    const rawLen = typeof msg.content === 'string' ? msg.content.length : -1;
+    console.log(`[GoLLM Transcript] role=${msg.role} raw=${rawLen} cleaned=${text.length} preview="${text.slice(0, 120).replace(/\n/g, '\\n')}"`);
     if (!text) continue;
 
     if (msg.role === "system") {
@@ -139,6 +158,7 @@ CRITICAL: You are connected to an execution environment (OpenClaw/Hermes). You D
     }
   }
 
+  console.log(`[GoLLM Transcript] Final transcript length: ${transcript.length}`);
   return transcript.trim();
 }
 
@@ -150,10 +170,14 @@ function determinePromptStrategy(session: any, messages: GollmMessage[], tools?:
   // If the conversation history matches, just send the latest message (Incremental)
   if (isSameConversation(oldMsgs, messages)) {
     const newText = extractLatestUserMessage(messages);
-    if (newText) return { text: newText, requireNewChat: false };
+    if (newText) {
+      console.log(`[GoLLM Strategy] Incremental mode, sending latest user message (${newText.length} chars): "${newText.slice(0, 100).replace(/\n/g, '\\n')}"`);
+      return { text: newText, requireNewChat: false };
+    }
   }
   
   // Otherwise, re-send the whole context (Stateless to Stateful translation)
+  console.log(`[GoLLM Strategy] Context shift detected, building full transcript`);
   return { text: formatTranscript(messages, tools), requireNewChat: true };
 }
 

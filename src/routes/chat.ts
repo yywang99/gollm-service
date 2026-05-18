@@ -13,27 +13,30 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
   fastify.post("/v1/chat/completions", async (request: FastifyRequest<{ Body: ChatBody }>, reply: FastifyReply) => {
     const { messages = [], tools = [] } = request.body || {};
 
-    // 1. Universal Message Filtering & Deduplication
-    // For Stateful Web UI, we only want the LAST user message if it's a stateless replay
-    const filteredMessages = messages.map((msg: any) => {
-      if (msg.role !== 'user') return msg;
-      const content = msg.content;
-      if (typeof content !== 'string') return msg;
-      
-      // Generic Metadata Filtering: Only strip the metadata lines themselves, not the entire trailing string.
-      // Often metadata blocks are enclosed in some markers or take up specific lines.
-      // We will remove known metadata headers but leave the rest of the text.
-      let stripped = content
-        .replace(/Conversation info \(untrusted metadata\):[^\n]*/gi, '')
-        .replace(/Sender \(untrusted metadata\):[^\n]*/gi, '')
-        .replace(/\[Metadata\][^\n]*/gi, '')
-        .trim();
-      
-      // If the message is JUST metadata after stripping, skip it
-      if (stripped.length === 0 && content.length > 0) return null;
-      
-      return { ...msg, content: stripped };
-    }).filter((msg: any) => msg !== null);
+    // ── DEBUG: Log raw incoming messages ──────────────────────────────────
+    console.log(`[GoLLM Chat] Incoming ${messages.length} messages, ${tools.length} tools`);
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      const contentPreview = typeof m.content === 'string'
+        ? m.content.slice(0, 200).replace(/\n/g, '\\n')
+        : Array.isArray(m.content)
+          ? `[Array(${(m.content as any[]).length})]`
+          : String(m.content).slice(0, 100);
+      console.log(`[GoLLM Chat]   [${i}] role=${m.role} content(${typeof m.content === 'string' ? m.content.length : '?'}): ${contentPreview}`);
+    }
+
+    // 1. Message passthrough — NO content stripping.
+    // OpenClaw metadata (untrusted metadata blocks) is passed through
+    // because stripping it here risks destroying the actual user message.
+    // The downstream cleanContent() in gollm-transport-stream.ts handles
+    // surgical metadata removal when building the transcript for Gemini.
+    const filteredMessages = messages.filter((msg: any) => {
+      // Only filter out completely empty messages
+      if (!msg.content && msg.role !== 'system') return false;
+      const text = typeof msg.content === 'string' ? msg.content.trim() : '';
+      // Keep everything, including metadata — let cleanContent handle it
+      return text.length > 0 || msg.role === 'system' || typeof msg.content !== 'string';
+    });
 
     if (!filteredMessages || filteredMessages.length === 0) {
       return reply.status(400).send({
