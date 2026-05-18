@@ -400,7 +400,7 @@ export class SessionManager {
         const newChatBtn = await page.$('button[aria-label*="New"],button[aria-label*="新對話"],button[aria-label*="新建"]');
         if (newChatBtn) {
           await this.dismissOverlays();
-          await newChatBtn.click();
+          await newChatBtn.click({ force: true, timeout: 3000 });
           await page.waitForTimeout(2000);
           console.log("[SessionManager] Clicked New Chat button");
         } else {
@@ -410,7 +410,9 @@ export class SessionManager {
           await page.waitForTimeout(2000);
         }
       } catch (e) {
-        console.log("[SessionManager] Error finding New Chat: " + e);
+        console.log("[SessionManager] Error clicking New Chat: " + e + " - falling back to direct navigation...");
+        await page.goto("https://gemini.google.com/app#new", { waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(2000);
       }
     }
 
@@ -432,14 +434,16 @@ export class SessionManager {
     try {
       const newChatBtn = await page.$('a[href="/app"], button[aria-label*="New"], button[aria-label*="新對話"], button[aria-label*="新建"]');
       if (newChatBtn) {
-        await newChatBtn.click();
+        await newChatBtn.click({ force: true, timeout: 3000 });
         await page.waitForTimeout(2000);
       } else {
         await page.goto("https://gemini.google.com/app", { waitUntil: "domcontentloaded" });
         await page.waitForTimeout(2000);
       }
     } catch (e) {
-      console.log("[SessionManager] Error starting new chat: " + e);
+      console.log("[SessionManager] Error starting new chat via click: " + e + " - falling back to navigation...");
+      await page.goto("https://gemini.google.com/app", { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(2000);
     }
     
     await page.waitForTimeout(1000); // Wait for new chat UI to settle
