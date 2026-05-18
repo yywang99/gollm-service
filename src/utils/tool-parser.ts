@@ -28,17 +28,36 @@ export interface HallucinationResult {
 }
 
 /**
+ * 核心解決方案：清洗 Gemini Web UI 強制渲染的 Markdown 代碼塊
+ * 並還原被轉義的 HTML 實體字元（防止網頁端把 < 改成 &lt;）
+ */
+function sanitizeWebRpaOutput(rawText: string): string {
+  if (!rawText) return '';
+
+  // 1. 移除可能包裹在最外層的代碼塊標籤，只保留內部核心
+  let cleaned = rawText.replace(/```(?:xml|json|html|javascript|ts|js|bash|sh|text)?\s*([\s\S]*?)\s*```/gi, '$1');
+  
+  // 移除剩餘的懸空反引號
+  cleaned = cleaned.replace(/```/g, '');
+
+  // 2. 拔除可能被轉義的 HTML 實體字元
+  cleaned = cleaned
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&');
+
+  return cleaned.trim();
+}
+
+/**
  * Parses text for Hermes-style tool calls: <call:plugin:method>{...}</call>
  * Also supports standard <tool_call> JSON blocks.
  */
 export function parseToolCalls(rawText: string): ParsedToolCall[] {
   const toolCalls: ParsedToolCall[] = [];
   
-  // Clean markdown code blocks (e.g., ```xml, ```json, ```)
-  const text = rawText
-    .replace(/```(?:xml|json|html|javascript|ts|js|bash|sh)?\n?/gi, '')
-    .replace(/```/g, '')
-    .trim();
+  // 進入解析前，先脫掉 Markdown 的糖衣外殼與 HTML 轉義
+  const text = sanitizeWebRpaOutput(rawText);
   
   // Pattern 1: Legacy OpenClaw/Hermes XML format <call:domain:method>{args}</call>
   const callPattern = /<call:([\w:-]+)>([\s\S]*?)<\/call>/g;
