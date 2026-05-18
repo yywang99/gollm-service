@@ -70,10 +70,14 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
       // 4. Tool Use Detection & Response Mapping (Universal Adapter)
       const toolCalls = parseToolCalls(result.text);
       const isPureTool = isPureToolCall(result.text, toolCalls);
-      
+
       // If it's a pure tool call, content should be null (OpenAI spec)
       const finalContent = isPureTool ? null : result.text;
       const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
+
+      // ── [Phase 4] Hallucination Warning Metadata ───────────────────
+      // If hallucination was detected and not resolved, add warning to response
+      const hasUnconfirmedAction = result.isHallucination === true;
 
       // 5. Handling Streaming (Simplified Chunking)
       if (request.body?.stream) {
@@ -89,10 +93,12 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
           choices: [
             {
               index: 0,
-              delta: { 
-                role: "assistant", 
+              delta: {
+                role: "assistant",
                 content: finalContent,
-                ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
+                ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+                // Attach hallucination warning as a special content block
+                ...(hasUnconfirmedAction ? { _gollm_hallucination_warn: true } : {}),
               },
               finish_reason: finishReason,
             },
@@ -106,7 +112,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
       }
 
       // 6. Final Non-Streaming Response
-      // We manually construct the response to support tool_calls
+      // We manually construct the response to support tool_calls and hallucination warnings
       const response = {
         id: `gollm-${Date.now()}`,
         object: "chat.completion",
@@ -119,6 +125,8 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
               role: "assistant",
               content: finalContent,
               ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+              // Attach hallucination warning as a custom field
+              ...(hasUnconfirmedAction ? { _gollm_hallucination_warn: true } : {}),
             },
             finish_reason: finishReason,
           },
@@ -128,6 +136,8 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
           completion_tokens: 0,
           total_tokens: 0,
         },
+        // Top-level flag for easier detection by Hermes/OpenClaw
+        ...(hasUnconfirmedAction ? { _gollm_unconfirmed_action: true } : {}),
       };
 
       return response;

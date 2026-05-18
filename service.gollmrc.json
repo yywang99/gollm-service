@@ -9,8 +9,8 @@
   },
   "playwright": {
     "browser": "chromium",
-    "headless": false,
-    "userDataDir": "~/.openclaw/gollm-playwright-profile",
+    "headless": true,
+    "userDataDir": "gollm-playwright-profile",
     "stealth": true
   },
   "gemini": {

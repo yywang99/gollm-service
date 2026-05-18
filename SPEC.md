@@ -347,6 +347,14 @@ gollm-service（本專案）
 - [ ] Selector 池自動更新（Gemini UI 改版時）
 - [ ] `~` 路徑自動展開（目前 `userDataDir` 中的 `~` 不會被 Node.js 展開）
 
+### Phase 4：幻覺防制 ✅（實作中）
+
+- [x] Hallucination Guard 機制（攔截「已處理」類幻覺回覆）
+- [x] System Observation 反饋注入（讓 Gemini 自我修正）
+- [x] 嚴格的 Action 格式約束（強化 Prompt 提示）
+- [x] 回應驗證層（Response Validation Layer）
+- [x] Retry Feedback Loop（最多 2 次重試）
+
 ---
 
 ## 6. 風險與對應
@@ -379,8 +387,104 @@ gollm-service（本專案）
 - [ ] 連續 50 回合對話不發生 DOM 洩漏
 - [ ] CDK overlay 移除穩定，點擊操作不再被阻擋
 
+### 幻覺防制驗收
+
+- [x] 當 Gemini 回覆「我已經修改了檔案」但無 action 標籤時，系統自動注入 System Observation
+- [x] 重試後仍無 action，回覆攔截並附加 `unconfirmed_action` flag
+- [x] 不影響正常的純文字對話流程（不可過度警覺）
+- [x] 重試次數上限 2 次，防止無限循環
+- [x] 可以透過 `service.gollmrc.json` 設定 `hallucinationGuard.enabled` 開關
+
 ---
 
-_規格書版本：v0.2.0_
-_更新日期：2026-05-16_
-_適用版本：gollm-service v0.2.0_
+## 8. 幻覺防制機制（Hallucination Guard）
+
+> **問題定義**：透過 gollm-service 的 Gemini Web App，模型常見的幻覺是聲稱「我已經修改了檔案」、「已處理完成」，但實際上並未執行任何工具，直接將回覆傳給 Hermes/OpenClaw，導致 Agent 誤以為任務已完成。
+
+### 8.1 問題根因
+
+| 層次 | 根因 |
+|------|------|
+| **第一層：Chatbot Bias** | Gemini 網頁版被訓練成「貼心的對話助理」，看到「修改檔案」類任務會直接說「已處理好」，而不知道自己被關在 RPA 殼裡 |
+| **第二層：Tool Call 缺失** | gollm-service 靠 Prompt 要求 Gemini 輸出格式，但上下文過長或任務複雜時，Gemini 會漏看格式要求，直接輸出純文字 |
+| **第三層：無驗證迴路** | `executeGollmRPA()` 收到回覆後，若 `parseToolCalls()` 為空，直接當成「普通文字回覆」傳回，沒有任何重新引導機制 |
+
+### 8.2 解決方案：四層防衛
+
+#### 第一層｜Prompt 強約束（輸入時）
+在 `formatTranscript()` 中加入 STRICT SYSTEM REMINDER：
+
+```
+[STRICT SYSTEM REMINDER - NON-NEGOTIABLE]
+You are running inside a Playwright RPA shell. You do NOT have direct filesystem access.
+- If user asks you to modify/create/delete files or run shell commands, you MUST output the appropriate action tags.
+- If you claim "I have already done X" without outputting action tags, you are HALLUCINATING.
+- Every file modification must be requested via action tags. You cannot fabricate completion.
+```
+
+#### 第二層｜回應驗證（收到回覆時）
+在 `executeGollmRPA()` 收到 `waitForStableResponse()` 的回覆後，立刻進行幻覺偵測：
+
+```typescript
+// 偽代碼
+const result = await waitForStableResponse(page, baseline);
+const toolCalls = parseToolCalls(result.text);
+const hallucination = detectHallucination(result.text, toolCalls);
+
+if (hallucination.isHallucination) {
+  await injectSystemObservation(page, hallucination.reason);
+  // 重試（最多 2 次）
+}
+```
+
+#### 第三層｜System Observation 注入（Feedback Loop）
+當偵測到幻覺時，向 Gemini 注入：
+
+```
+[System Observation] ⚠️ HALLUCINATION DETECTED
+
+Your previous response claimed completion without outputting action tags.
+You do NOT have filesystem access. You MUST output your intended action in the correct format.
+```
+
+#### 第四層｜熔斷機制
+重試 2 次後仍無有效 action，回傳時附加 metadata flag：
+```json
+{
+  "content": "我已經修改了檔案...",
+  "_gollm_hallucination_warn": true,
+  "_gollm_unconfirmed_action": true
+}
+```
+
+### 8.3 實作變更
+
+| 檔案 | 變更內容 |
+|------|---------|
+| `src/utils/hallucination-patterns.ts` | **新增**：幻覺關鍵字 pattern 集合 |
+| `src/utils/tool-parser.ts` | 新增 `detectHallucination()` 函式 |
+| `src/agents/gollm-transport-stream.ts` | 加入驗證 → 重試迴路 + STRICT SYSTEM REMINDER |
+| `src/routes/chat.ts` | 附加 `_gollm_hallucination_warn` metadata |
+
+---
+
+## 9. 設定檔新增選項（service.gollmrc.json）
+
+```json
+{
+  "hallucinationGuard": {
+    "enabled": true,
+    "maxRetries": 2,
+    "patterns": [
+      "已處理", "已修改", "已完成", "已經做好",
+      "I have already modified", "I have already created", "Done!"
+    ]
+  }
+}
+```
+
+---
+
+_規格書版本：v0.3.0_
+_更新日期：2026-05-17_
+_適用版本：gollm-service v0.3.0_
