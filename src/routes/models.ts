@@ -6,21 +6,21 @@ export async function modelsRoute(fastify: FastifyInstance) {
       object: "list",
       data: [
         {
-          id: "gemini-fast",
+          id: "gemini-flash-lite",
           object: "model",
           created: 1700000000,
           owned_by: "google/gemini",
           permission: [],
-          root: "gemini-fast",
+          root: "gemini-flash-lite",
           parent: null,
         },
         {
-          id: "gemini-think",
+          id: "gemini-flash",
           object: "model",
           created: 1700000001,
           owned_by: "google/gemini",
           permission: [],
-          root: "gemini-think",
+          root: "gemini-flash",
           parent: null,
         },
         {
