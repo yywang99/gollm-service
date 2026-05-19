@@ -212,9 +212,10 @@ export class SessionManager {
         `var allButtons = document.querySelectorAll('button');
         for (var i = 0; i < allButtons.length; i++) {
           var txt = (allButtons[i].textContent || '').trim();
-          if (/^Flash-Lite$/i.test(txt)) return 'flash-lite';
-          if (/^Flash$/i.test(txt)) return 'flash';
-          if (/^Pro$/i.test(txt)) return 'pro';
+          if (txt.length > 25) continue; // skip large buttons
+          if (/Flash-Lite/i.test(txt)) return 'flash-lite';
+          if (/Flash(?!-Lite)/i.test(txt)) return 'flash';
+          if (/Pro/i.test(txt)) return 'pro';
         }
         var modeBtn = document.querySelector('[aria-label*="模型"], [aria-label*="Model"]');
         if (modeBtn) {
@@ -266,7 +267,7 @@ export class SessionManager {
     }
     if (!clicked) {
       try {
-        const textBtn = page.locator('button').filter({ hasText: /^(Flash-Lite|Flash|Pro)$/i }).first();
+        const textBtn = page.locator('button').filter({ hasText: /(Flash-Lite|Flash|Pro)/i }).first();
         if (await textBtn.isVisible({ timeout: 2000 }).catch(() => false)) { await textBtn.click(); clicked = true; }
       } catch { /* ignore */ }
     }
