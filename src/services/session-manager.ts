@@ -27,7 +27,7 @@ export class SessionManager {
   private state: SessionState = "new";
   private options: SessionManagerOptions;
   private lastProcessedMessages: any[] = [];
-  private _targetMode: "think" | "pro" | "fast" | null = null;
+  private _targetMode: "flash-lite" | "flash" | "pro" | null = null;
 
   getLastProcessedMessages(): any[] {
     return this.lastProcessedMessages;
@@ -53,17 +53,16 @@ export class SessionManager {
   }
 
   /**
-   * Set the target Gemini mode that should be enforced after any page navigation.
-   * OpenClaw can call this to tell GoLLM which mode the user selected.
+   * Set the target Gemini model.
+   * Simplified: just pick one of the 3 models. Thinking is always "延長".
    */
-  setTargetMode(mode: "think" | "pro" | "fast" | null) {
+  setTargetMode(mode: "flash-lite" | "flash" | "pro" | null) {
     this._targetMode = mode;
     console.log(`[SessionManager] Target mode set to: ${mode}`);
   }
 
   /**
-   * Apply the target mode by clicking the correct button if needed.
-   * Returns true if mode was applied or already correct, false if button not found.
+   * Apply the target mode by clicking the correct model if needed.
    */
   private async applyTargetMode(): Promise<boolean> {
     if (!this._targetMode) {
@@ -74,7 +73,6 @@ export class SessionManager {
     const page = await this.getPage();
     if (!page) return false;
 
-    // First detect current mode
     const currentMode = await this.detectGeminiMode();
     if (currentMode === this._targetMode) {
       console.log(`[SessionManager] Mode already correct: ${currentMode}`);
@@ -196,47 +194,40 @@ export class SessionManager {
     }
   }
 
-  // ─── Mode Detection ─────────────────────────────────────────────────────────
+  // ─── Mode Detection & Switching ────────────────────────────────────────────
+  //
+  // Simplified model: 3 models, thinking always fixed to "延長".
+  //   "flash-lite" → 3.1 Flash-Lite
+  //   "flash"      → 3 Flash
+  //   "pro"        → 3.1 Pro
+  //
+  // Thinking level ("延長") is set once at first launch and never touched again.
 
-  /**
-   * Detect current Gemini mode. 3×2 matrix:
-   *   Models:   Flash-Lite | Flash | Pro
-   *   Thinking: 標準 (Standard) | 延長 (Extended)
-   *
-   * "think" = any model + 延長, "pro" = Pro + 標準, "fast" = Flash/Flash-Lite + 標準
-   */
-  async detectGeminiMode(): Promise<"think" | "pro" | "fast" | "unknown"> {
+  async detectGeminiMode(): Promise<"flash-lite" | "flash" | "pro" | "unknown"> {
     const page = await this.getPage();
     if (!page) return "unknown";
 
     try {
       const modeFn = new Function(
         `var allButtons = document.querySelectorAll('button');
-        var modelText = '';
         for (var i = 0; i < allButtons.length; i++) {
           var txt = (allButtons[i].textContent || '').trim();
-          if (/^(Flash-Lite|Flash|Pro)$/i.test(txt)) { modelText = txt.toLowerCase(); break; }
+          if (/^Flash-Lite$/i.test(txt)) return 'flash-lite';
+          if (/^Flash$/i.test(txt)) return 'flash';
+          if (/^Pro$/i.test(txt)) return 'pro';
         }
-        if (!modelText) {
-          var modeBtn = document.querySelector('[aria-label*="模型"], [aria-label*="Model"], [aria-label*="開啟模式"]');
-          if (modeBtn) modelText = (modeBtn.textContent || '').trim().toLowerCase();
+        var modeBtn = document.querySelector('[aria-label*="模型"], [aria-label*="Model"]');
+        if (modeBtn) {
+          var t = (modeBtn.textContent || '').trim().toLowerCase();
+          if (t.includes('lite')) return 'flash-lite';
+          if (t.includes('pro')) return 'pro';
+          if (t.includes('flash')) return 'flash';
         }
-        var baseModel = 'unknown';
-        if (modelText.includes('lite')) baseModel = 'fast';
-        else if (modelText.includes('pro')) baseModel = 'pro';
-        else if (modelText.includes('flash') || modelText.includes('快捷')) baseModel = 'fast';
-        var isExtended = false;
-        var checked = document.querySelectorAll('[aria-checked="true"], [aria-selected="true"]');
-        for (var i = 0; i < checked.length; i++) {
-          var t = (checked[i].textContent || '').trim();
-          if (t.includes('延長') || t.includes('Extended')) { isExtended = true; break; }
-        }
-        if (isExtended) return 'think';
-        return baseModel;`
+        return 'unknown';`
       );
       const mode = await page.evaluate(modeFn as any);
-      console.log(`[SessionManager] Detected Gemini mode: ${mode}`);
-      return mode as "think" | "pro" | "fast" | "unknown";
+      console.log(`[SessionManager] Detected model: ${mode}`);
+      return mode as "flash-lite" | "flash" | "pro" | "unknown";
     } catch (e) {
       console.log(`[SessionManager] Mode detection error: ${e}`);
       return "unknown";
@@ -244,22 +235,20 @@ export class SessionManager {
   }
 
   /**
-   * Set Gemini mode. 3×2 matrix:
-   *   "fast"  → Flash + 標準
-   *   "pro"   → Pro + 標準
-   *   "think" → keep current model + 延長
+   * Switch to the specified Gemini model.
+   * Thinking level is NOT changed — it stays on "延長" (set once manually).
    */
-  async setGeminiMode(targetMode: "think" | "pro" | "fast"): Promise<boolean> {
+  async setGeminiMode(targetMode: "flash-lite" | "flash" | "pro"): Promise<boolean> {
     const page = await this.getPage();
     if (!page) return false;
 
-    const modelConfig: Record<string, { modelPattern: RegExp | null; thinking: string }> = {
-      fast:  { modelPattern: /Flash/i,  thinking: "標準" },
-      pro:   { modelPattern: /Pro/i,    thinking: "標準" },
-      think: { modelPattern: null,      thinking: "延長" },
+    const modelPatterns: Record<string, RegExp> = {
+      'flash-lite': /Flash-Lite/i,
+      'flash':      /^Flash$/i,
+      'pro':        /Pro/i,
     };
-    const config = modelConfig[targetMode];
-    if (!config) return false;
+    const pattern = modelPatterns[targetMode];
+    if (!pattern) return false;
 
     await this.dismissOverlays();
 
@@ -285,74 +274,54 @@ export class SessionManager {
     await this.dismissOverlays();
     await page.waitForTimeout(500);
 
-    // Click target MODEL (if we need to change it; think mode keeps current model)
-    if (config.modelPattern) {
-      let modelClicked = false;
-      for (const role of ['menuitemradio', 'menuitem', 'option', 'radio'] as const) {
-        try {
-          const loc = page.getByRole(role, { name: config.modelPattern });
-          const count = await loc.count();
-          for (let i = 0; i < count; i++) {
-            if (await loc.nth(i).isVisible().catch(() => false)) {
-              console.log(`[SessionManager] ✅ Clicking model via ${role}: ${config.modelPattern}`);
-              await loc.nth(i).click(); modelClicked = true; break;
-            }
-          }
-        } catch { /* next */ }
-        if (modelClicked) break;
-      }
-      if (!modelClicked) {
-        try {
-          const containers = page.locator('[role="menu"], [role="listbox"], [role="dialog"]');
-          const cCount = await containers.count();
-          for (let c = 0; c < cCount; c++) {
-            const container = containers.nth(c);
-            if (!await container.isVisible().catch(() => false)) continue;
-            const items = container.locator('button, [role="menuitem"], [role="menuitemradio"], [role="option"], li, div[tabindex]');
-            const iCount = await items.count();
-            for (let j = 0; j < iCount; j++) {
-              const itemText = await items.nth(j).textContent().catch(() => '') || '';
-              if (config.modelPattern!.test(itemText.trim())) {
-                console.log(`[SessionManager] ✅ Clicking model via text: "${itemText.trim()}"`);
-                await items.nth(j).click(); modelClicked = true; break;
-              }
-            }
-            if (modelClicked) break;
-          }
-        } catch { /* ignore */ }
-      }
-      if (!modelClicked) { console.log("[SessionManager] Model not found"); await page.keyboard.press('Escape'); return false; }
-      await page.waitForTimeout(500);
-    }
-
-    // Set THINKING LEVEL ("標準" or "延長")
-    console.log(`[SessionManager] Setting thinking: ${config.thinking}`);
-    const thinkPat = new RegExp(config.thinking, 'i');
-    let thinkClicked = false;
-    for (const role of ['menuitemradio', 'menuitem', 'option', 'radio', 'button'] as const) {
+    // Click the target model
+    let modelClicked = false;
+    for (const role of ['menuitemradio', 'menuitem', 'option', 'radio'] as const) {
       try {
-        const loc = page.getByRole(role, { name: thinkPat });
+        const loc = page.getByRole(role, { name: pattern });
         const count = await loc.count();
         for (let i = 0; i < count; i++) {
           if (await loc.nth(i).isVisible().catch(() => false)) {
-            console.log(`[SessionManager] ✅ Thinking: "${config.thinking}"`);
-            await loc.nth(i).click(); thinkClicked = true; break;
+            console.log(`[SessionManager] ✅ Selecting model: ${targetMode}`);
+            await loc.nth(i).click(); modelClicked = true; break;
           }
         }
       } catch { /* next */ }
-      if (thinkClicked) break;
+      if (modelClicked) break;
     }
-    if (!thinkClicked) {
+
+    // Fallback: text scan inside menu
+    if (!modelClicked) {
       try {
-        const fb = page.locator(`text="${config.thinking}"`).first();
-        if (await fb.isVisible({ timeout: 1000 }).catch(() => false)) { await fb.click(); thinkClicked = true; }
+        const containers = page.locator('[role="menu"], [role="listbox"], [role="dialog"]');
+        const cCount = await containers.count();
+        for (let c = 0; c < cCount; c++) {
+          const container = containers.nth(c);
+          if (!await container.isVisible().catch(() => false)) continue;
+          const items = container.locator('button, [role="menuitem"], [role="menuitemradio"], [role="option"], li, div[tabindex]');
+          const iCount = await items.count();
+          for (let j = 0; j < iCount; j++) {
+            const itemText = await items.nth(j).textContent().catch(() => '') || '';
+            if (pattern.test(itemText.trim())) {
+              console.log(`[SessionManager] ✅ Selecting model via text: "${itemText.trim()}"`);
+              await items.nth(j).click(); modelClicked = true; break;
+            }
+          }
+          if (modelClicked) break;
+        }
       } catch { /* ignore */ }
+    }
+
+    if (!modelClicked) {
+      console.log(`[SessionManager] Model "${targetMode}" not found in dropdown`);
+      await page.keyboard.press('Escape');
+      return false;
     }
 
     await page.waitForTimeout(500);
     await page.keyboard.press('Escape');
     await page.waitForTimeout(300);
-    console.log(`[SessionManager] Mode set: ${targetMode} (model=${config.modelPattern || 'keep'}, thinking=${config.thinking})`);
+    console.log(`[SessionManager] ✅ Model switched to: ${targetMode}`);
     return true;
   }
 

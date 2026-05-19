@@ -48,13 +48,17 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
     const thinkingLog = opts.config?.gemini?.thinkingLog !== false;
     const playwrightConfig = opts.config?.playwright || {};
 
-    // 2. Dynamic Mode Selection (Harness Feature)
-    const modeMatch = modelId.match(/-(thinking|think|pro|fast)$/i);
+    // 2. Dynamic Model Selection
+    // Supports: golem/gemini-pro, golem/gemini-flash, golem/gemini-flash-lite, gemini-think, etc.
+    const modeMatch = modelId.match(/-(flash-lite|flash|pro|thinking|think|fast)$/i);
     if (modeMatch) {
-      const modeMap: Record<string, "think" | "pro" | "fast"> = {
-        think: "think", thinking: "think",
-        pro: "pro",
-        fast: "fast",
+      const modeMap: Record<string, "flash-lite" | "flash" | "pro"> = {
+        'flash-lite': 'flash-lite',
+        'fast': 'flash',
+        'flash': 'flash',
+        'pro': 'pro',
+        'think': 'pro',      // backward compat: think → use Pro model
+        'thinking': 'pro',
       };
       const detectedMode = modeMap[modeMatch[1].toLowerCase()];
       if (detectedMode) {
