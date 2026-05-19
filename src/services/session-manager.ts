@@ -199,48 +199,58 @@ export class SessionManager {
   // ─── Mode Detection ─────────────────────────────────────────────────────────
 
   /**
-   * Detect current Gemini mode by looking for active mode buttons.
-   * Returns: "think" (深度思考/思考), "pro" (Pro), "fast" (快捷), or "unknown"
+   * Detect current Gemini mode by looking at the model selector button.
+   *
+   * New Gemini 3 UI (May 2026):
+   *   Models: "3.1 Flash-Lite", "3 Flash", "3.1 Pro"
+   *   Thinking: "標準" (Standard), "延長" (Extended)
+   *   Dropdown trigger button shows "Flash", "Pro", "Flash-Lite"
+   *
+   * Internal mode mapping:
+   *   "fast"  → Flash / Flash-Lite
+   *   "pro"   → Pro
+   *   "think" → Pro + 延長 thinking  (or legacy 思考型)
    */
   async detectGeminiMode(): Promise<"think" | "pro" | "fast" | "unknown"> {
     const page = await this.getPage();
     if (!page) return "unknown";
 
     try {
-      // @ts-ignore
       const modeFn = new Function(
-        `var checked = document.querySelectorAll('button[aria-checked=\"true\"], button[aria-pressed=\"true\"], [role=\"radio\"][aria-checked=\"true\"]');
-        if (checked && checked.length > 0) {
-          for (var i = 0; i < checked.length; i++) {
-            var txt = (checked[i].textContent || '').trim().toLowerCase();
-            if (txt.includes('思考') || txt.includes('think')) return 'think';
-            if (txt.includes('pro') && !txt.includes('快捷')) return 'pro';
-            if (txt.includes('快捷') || txt.includes('flash')) return 'fast';
+        `// 1. Find the model selector trigger button (shows "Flash", "Pro", etc.)
+        var allButtons = document.querySelectorAll('button');
+        var modelText = '';
+        for (var i = 0; i < allButtons.length; i++) {
+          var txt = (allButtons[i].textContent || '').trim();
+          if (/^(Flash-Lite|Flash|Pro)$/i.test(txt)) {
+            modelText = txt.toLowerCase();
+            break;
           }
         }
-        
-        // Check the mode selector button by its known aria-label
-        var modeBtn = document.querySelector('[aria-label=\"開啟模式挑選器\"], [aria-label=\"Model selector\"], [aria-label=\"模型選擇器\"]');
-        if (modeBtn) {
-          var txt = (modeBtn.textContent || '').trim();
-          if (txt === '快捷' || txt.includes('Flash')) return 'fast';
-          if (txt === '思考型' || txt.includes('Think')) return 'think';
-          if (txt === 'Pro' || txt.includes('Advanced')) return 'pro';
+        // Also try aria-label based detection
+        if (!modelText) {
+          var modeBtn = document.querySelector('[aria-label*="模型"], [aria-label*="Model"], [aria-label*="開啟模式"]');
+          if (modeBtn) modelText = (modeBtn.textContent || '').trim().toLowerCase();
         }
-        
-        // Fallback: Check for grey pill button with exact text
-        var buttons = document.querySelectorAll('button, [role="button"], div[role="button"]');
-        for (var i = 0; i < buttons.length; i++) {
-          var b = buttons[i];
-          var txt = (b.textContent || '').trim();
-          if (txt === '快捷' || txt === '思考型' || txt === 'Pro' || txt === 'Gemini Advanced' || txt === 'Gemini Pro') {
-            if (txt === '快捷' || txt.includes('Flash')) return 'fast';
-            if (txt === '思考型' || txt.includes('Think')) return 'think';
-            if (txt === 'Pro' || txt.includes('Advanced')) return 'pro';
+
+        // 2. Determine base model
+        var model = 'unknown';
+        if (modelText.includes('lite')) model = 'fast';
+        else if (modelText.includes('pro')) model = 'pro';
+        else if (modelText.includes('flash') || modelText.includes('快捷')) model = 'fast';
+        else if (modelText.includes('思考')) model = 'think';
+
+        // 3. Check if extended thinking ("延長") is active
+        var checked = document.querySelectorAll('[aria-checked="true"], [aria-selected="true"]');
+        for (var i = 0; i < checked.length; i++) {
+          var t = (checked[i].textContent || '').trim();
+          if (t.includes('延長') || t.includes('Extended') || t.includes('extend')) {
+            model = 'think';
+            break;
           }
         }
-        
-        return 'unknown';`
+
+        return model;`
       );
       const mode = await page.evaluate(modeFn as any);
       console.log(`[SessionManager] Detected Gemini mode: ${mode}`);
@@ -252,114 +262,175 @@ export class SessionManager {
   }
 
   /**
-   * Set Gemini mode via the dropdown menu in the input area.
+   * Set Gemini mode via the dropdown menu.
+   *
+   * New UI (May 2026):
+   *   1. Click "Flash ▾" button at bottom-right of input
+   *   2. Dropdown: "3.1 Flash-Lite", "3 Flash", "3.1 Pro"
+   *   3. Thinking level: "標準", "延長"
+   *
+   * Mode mapping:
+   *   "fast"  → 3 Flash (or Flash-Lite), thinking unchanged
+   *   "pro"   → 3.1 Pro, thinking unchanged
+   *   "think" → 3.1 Pro + 延長 thinking
    */
   async setGeminiMode(targetMode: "think" | "pro" | "fast"): Promise<boolean> {
     const page = await this.getPage();
     if (!page) return false;
 
-    const modeTextMap: Record<string, string> = {
-      think: "思考型",
-      pro: "Pro",
-      fast: "快捷",
+    // Model text patterns to match in the dropdown menu
+    const modelConfig: Record<string, { patterns: RegExp[]; thinking: string | null }> = {
+      fast:  { patterns: [/Flash/i], thinking: null },
+      pro:   { patterns: [/Pro/i],   thinking: null },
+      think: { patterns: [/Pro/i],   thinking: "延長" },
     };
-    const targetText = modeTextMap[targetMode];
-    if (!targetText) return false;
 
-    // Step 1: Dismiss any CDK overlays that may be blocking clicks
+    const config = modelConfig[targetMode];
+    if (!config) return false;
+
+    // Step 1: Dismiss overlays
     await this.dismissOverlays();
 
-    // Step 2: Click the dropdown button
+    // Step 2: Open the model dropdown
+    let clicked = false;
     const dropdownSelectors = [
+      '[aria-label*="模型"]',
+      '[aria-label*="Model"]',
       '[aria-label="開啟模式挑選器"]',
-      '[aria-label="Model selector"]',
       '[aria-label="模型選擇器"]',
       '[aria-haspopup="menu"]',
       '[aria-haspopup="listbox"]',
-      '[role="combobox"]'
+      '[aria-haspopup="dialog"]',
     ];
 
-    let clicked = false;
     for (const sel of dropdownSelectors) {
       try {
         const el = page.locator(sel).first();
-        if (await el.count() > 0) {
-          const visible = await el.isVisible().catch(() => false);
-          if (visible) {
-            console.log(`[SessionManager] Clicking dropdown with selector: ${sel}`);
-            await el.click();
-            clicked = true;
-            break;
-          }
+        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+          console.log(`[SessionManager] Opening dropdown: ${sel}`);
+          await el.click();
+          clicked = true;
+          break;
         }
-      } catch (e) { /* try next */ }
+      } catch { /* try next */ }
     }
 
+    // Fallback: find button by displayed model name text
     if (!clicked) {
-      // Fallback: dismiss overlays, press Escape to close any overlay, then look for dropdown by exact text
-      await this.dismissOverlays();
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(300);
       try {
-        // Find button with exact text matching the current mode
-        const textBtn = page.locator('div[role="button"], span[role="button"], button').filter({ hasText: /^(快捷|思考型|Pro|Gemini Advanced|Gemini Pro)$/i }).first();
+        const textBtn = page.locator('button').filter({
+          hasText: /^(Flash-Lite|Flash|Pro|快捷|思考型)$/i
+        }).first();
         if (await textBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-          const btnText = await textBtn.textContent().catch(() => '') || '';
-          console.log(`[SessionManager] Clicking dropdown by text: "${btnText.trim()}"`);
           await textBtn.click();
           clicked = true;
         }
-      } catch (e) { /* ignore */ }
+      } catch { /* ignore */ }
     }
 
     if (!clicked) {
-      console.log("[SessionManager] Could not find dropdown button");
+      console.log("[SessionManager] Could not find model dropdown button");
       return false;
     }
 
-    // Step 3: Dismiss overlays before clicking an option in the menu
     await this.dismissOverlays();
     await page.waitForTimeout(500);
 
-    // Step 4: Click the target mode option in the dropdown menu
-    try {
-      const locators = [
-        page.getByRole('menuitemradio', { name: new RegExp(targetText, 'i') }),
-        page.getByRole('menuitem', { name: new RegExp(targetText, 'i') }),
-        page.getByRole('option', { name: new RegExp(targetText, 'i') })
-      ];
+    // Step 3: Click the target model
+    let modelClicked = false;
+    for (const pattern of config.patterns) {
+      if (modelClicked) break;
 
-      for (const loc of locators) {
-        const count = await loc.count();
-        for (let i = 0; i < count; i++) {
-          const el = loc.nth(i);
-          if (await el.isVisible().catch(() => false)) {
-            console.log(`[SessionManager] ✅ Clicking option via ARIA role: "${targetText}"`);
-            await el.click();
-            await page.waitForTimeout(1000);
-            return true;
+      // Try ARIA roles
+      for (const role of ['menuitemradio', 'menuitem', 'option', 'radio'] as const) {
+        try {
+          const loc = page.getByRole(role, { name: pattern });
+          const count = await loc.count();
+          for (let i = 0; i < count; i++) {
+            if (await loc.nth(i).isVisible().catch(() => false)) {
+              console.log(`[SessionManager] ✅ Clicking model via ${role}: ${pattern}`);
+              await loc.nth(i).click();
+              modelClicked = true;
+              break;
+            }
           }
-        }
+        } catch { /* try next role */ }
+        if (modelClicked) break;
       }
 
-      // If ARIA roles didn't work, fallback to text matching inside the menu overlay.
-      // We must avoid clicking the original button again!
-      const menuLoc = page.locator('[role="menu"], [role="listbox"]').filter({ hasText: new RegExp(targetText, 'i') }).last();
-      if (await menuLoc.isVisible().catch(() => false)) {
-         const itemLoc = menuLoc.locator(`text="${targetText}"`).first();
-         if (await itemLoc.isVisible().catch(() => false)) {
-            console.log(`[SessionManager] ✅ Clicking option via menu fallback: "${targetText}"`);
-            await itemLoc.click();
-            await page.waitForTimeout(1000);
-            return true;
-         }
+      // Fallback: scan all clickable items in any visible menu/dialog
+      if (!modelClicked) {
+        try {
+          const containers = page.locator('[role="menu"], [role="listbox"], [role="dialog"]');
+          const cCount = await containers.count();
+          for (let c = 0; c < cCount; c++) {
+            const container = containers.nth(c);
+            if (!await container.isVisible().catch(() => false)) continue;
+            const items = container.locator('button, [role="menuitem"], [role="menuitemradio"], [role="option"], li, div[tabindex]');
+            const iCount = await items.count();
+            for (let j = 0; j < iCount; j++) {
+              const itemText = await items.nth(j).textContent().catch(() => '') || '';
+              if (pattern.test(itemText.trim())) {
+                console.log(`[SessionManager] ✅ Clicking model via text: "${itemText.trim()}"`);
+                await items.nth(j).click();
+                modelClicked = true;
+                break;
+              }
+            }
+            if (modelClicked) break;
+          }
+        } catch { /* ignore */ }
       }
-    } catch (e) {
-      console.log("[SessionManager] Option scan error: " + e);
     }
 
-    console.log("[SessionManager] Failed to set mode: " + targetMode);
-    return false;
+    if (!modelClicked) {
+      console.log("[SessionManager] Could not find target model in dropdown");
+      await page.keyboard.press('Escape');
+      return false;
+    }
+
+    await page.waitForTimeout(500);
+
+    // Step 4: Set thinking level if needed ("延長" for think mode)
+    if (config.thinking) {
+      console.log(`[SessionManager] Setting thinking level: ${config.thinking}`);
+      const thinkingPattern = new RegExp(config.thinking, 'i');
+      let thinkingClicked = false;
+
+      for (const role of ['menuitemradio', 'menuitem', 'option', 'radio', 'button'] as const) {
+        try {
+          const loc = page.getByRole(role, { name: thinkingPattern });
+          const count = await loc.count();
+          for (let i = 0; i < count; i++) {
+            if (await loc.nth(i).isVisible().catch(() => false)) {
+              console.log(`[SessionManager] ✅ Clicking thinking level: "${config.thinking}"`);
+              await loc.nth(i).click();
+              thinkingClicked = true;
+              break;
+            }
+          }
+        } catch { /* try next */ }
+        if (thinkingClicked) break;
+      }
+
+      // Fallback: text match
+      if (!thinkingClicked) {
+        try {
+          const fallback = page.locator(`text="${config.thinking}"`).first();
+          if (await fallback.isVisible({ timeout: 1000 }).catch(() => false)) {
+            await fallback.click();
+            thinkingClicked = true;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    await page.waitForTimeout(500);
+    await page.keyboard.press('Escape'); // Close any remaining menus
+    await page.waitForTimeout(300);
+
+    console.log(`[SessionManager] Mode set complete: ${targetMode}`);
+    return true;
   }
 
   async navigateToGemini(): Promise<void> {
