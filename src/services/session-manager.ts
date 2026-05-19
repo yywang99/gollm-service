@@ -244,7 +244,8 @@ export class SessionManager {
 
     const modelPatterns: Record<string, RegExp> = {
       'flash-lite': /Flash-Lite/i,
-      'flash':      /^Flash$/i,
+      // Match "Flash" but NOT "Flash-Lite" (negative lookahead)
+      'flash':      /Flash(?!-Lite)/i,
       'pro':        /Pro/i,
     };
     const pattern = modelPatterns[targetMode];
