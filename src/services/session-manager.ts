@@ -254,24 +254,38 @@ export class SessionManager {
 
     await this.dismissOverlays();
 
-    // Open the model dropdown
+    await this.dismissOverlays();
+
+    // Open the model dropdown - prioritize the actual button showing the model name
     let clicked = false;
-    for (const sel of ['[aria-label*="模型"]', '[aria-label*="Model"]', '[aria-label="開啟模式挑選器"]', '[aria-haspopup="menu"]', '[aria-haspopup="listbox"]', '[aria-haspopup="dialog"]']) {
+    
+    // First, try to find the button by its text (e.g., "Flash-Lite ▾", "3 Flash")
+    for (const modelName of ['Flash-Lite', 'Flash', 'Pro']) {
       try {
-        const el = page.locator(sel).first();
-        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-          console.log(`[SessionManager] Opening dropdown: ${sel}`);
-          await el.click(); clicked = true; break;
+        const btn = page.getByRole('button', { name: new RegExp(modelName, 'i') }).first();
+        if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+          console.log(`[SessionManager] Opening dropdown via text match: ${modelName}`);
+          await btn.click();
+          clicked = true;
+          break;
         }
-      } catch { /* next */ }
-    }
-    if (!clicked) {
-      try {
-        const textBtn = page.locator('button').filter({ hasText: /(Flash-Lite|Flash|Pro)/i }).first();
-        if (await textBtn.isVisible({ timeout: 2000 }).catch(() => false)) { await textBtn.click(); clicked = true; }
       } catch { /* ignore */ }
     }
-    if (!clicked) { console.log("[SessionManager] Could not find dropdown"); return false; }
+
+    // Fallback ARIA selectors (removed the old trap '[aria-label="開啟模式挑選器"]')
+    if (!clicked) {
+      for (const sel of ['[aria-label*="模型"]', '[aria-label*="Model"]', '[aria-haspopup="menu"]', '[aria-haspopup="listbox"]']) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+            console.log(`[SessionManager] Opening dropdown fallback: ${sel}`);
+            await el.click(); clicked = true; break;
+          }
+        } catch { /* next */ }
+      }
+    }
+
+    if (!clicked) { console.log("[SessionManager] Could not find dropdown button"); return false; }
 
     await this.dismissOverlays();
     await page.waitForTimeout(500);
