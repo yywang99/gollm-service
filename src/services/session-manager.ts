@@ -287,7 +287,6 @@ export class SessionManager {
 
     if (!clicked) { console.log("[SessionManager] Could not find dropdown button"); return false; }
 
-    await this.dismissOverlays();
     await page.waitForTimeout(500);
 
     // Click the target model
