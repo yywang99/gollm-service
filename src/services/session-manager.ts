@@ -42,13 +42,22 @@ export class SessionManager {
    */
   private async dismissOverlays(): Promise<void> {
     try {
-      await this.page?.evaluate(
-        new Function(
-          "document.querySelectorAll(" +
-            "'.cdk-overlay-backdrop, .cdk-overlay-transparent-backdrop, .cdk-overlay-container'" +
-          ").forEach(function(el){if(el.parentNode)el.parentNode.removeChild(el);})"
-        ) as any
-      );
+      await this.page?.evaluate(() => {
+        // @ts-expect-error — window is a browser global inside page.evaluate
+        const win = (window as any);
+        const selectors = [
+          '.cdk-overlay-backdrop',
+          '.cdk-overlay-transparent-backdrop',
+          '.cdk-overlay-container',
+          '[class*="modal-backdrop"]',
+          '[class*="backdrop"][class*="show"]',
+          '[role="dialog"][aria-modal="true"]'
+        ];
+        const combinedSelector = selectors.join(',');
+        win.document.querySelectorAll(combinedSelector).forEach((el: any) => {
+          if (el.parentNode) el.parentNode.removeChild(el);
+        });
+      });
     } catch { /* best-effort */ }
   }
 
@@ -64,7 +73,7 @@ export class SessionManager {
   /**
    * Apply the target mode by clicking the correct model if needed.
    */
-  private async applyTargetMode(): Promise<boolean> {
+  public async applyTargetMode(): Promise<boolean> {
     if (!this._targetMode) {
       console.log(`[SessionManager] No target mode set, skipping apply`);
       return true;
@@ -80,7 +89,21 @@ export class SessionManager {
     }
 
     console.log(`[SessionManager] Applying target mode: ${this._targetMode} (current: ${currentMode})`);
-    return await this.setGeminiMode(this._targetMode);
+    
+    // Limit attempts to avoid infinite "Context Shift" loop
+    let attempts = 0;
+    const maxAttempts = 2;
+    while (attempts < maxAttempts) {
+      attempts++;
+      const success = await this.setGeminiMode(this._targetMode);
+      if (success) return true;
+      
+      console.warn(`[SessionManager] Model switch attempt ${attempts}/${maxAttempts} failed`);
+      await page.waitForTimeout(1000);
+    }
+
+    console.error(`[SessionManager] Failed to switch to ${this._targetMode} after ${maxAttempts} attempts. Giving up to prevent loop.`);
+    return false; // Return false so the caller knows it failed, but we stop trying here
   }
 
   constructor(options: SessionManagerOptions = {}) {
@@ -208,25 +231,27 @@ export class SessionManager {
     if (!page) return "unknown";
 
     try {
-      const modeFn = new Function(
-        `var allButtons = document.querySelectorAll('button');
-        for (var i = 0; i < allButtons.length; i++) {
-          var txt = (allButtons[i].textContent || '').trim();
-          if (txt.length > 25) continue; // skip large buttons
+      const mode = await page.evaluate(() => {
+        // @ts-expect-error — window/document are browser globals inside page.evaluate
+        const win = (window as any);
+        const allButtons = win.document.querySelectorAll('button');
+        for (let i = 0; i < allButtons.length; i++) {
+          const btn = allButtons[i];
+          const txt = (btn.textContent || '').trim();
+          if (txt.length > 25) continue;
           if (/Flash-Lite/i.test(txt)) return 'flash-lite';
           if (/Flash(?!-Lite)/i.test(txt)) return 'flash';
           if (/Pro/i.test(txt)) return 'pro';
         }
-        var modeBtn = document.querySelector('[aria-label*="模型"], [aria-label*="Model"]');
+        const modeBtn = win.document.querySelector('[aria-label*="模型"], [aria-label*="Model"]');
         if (modeBtn) {
-          var t = (modeBtn.textContent || '').trim().toLowerCase();
+          const t = (modeBtn.textContent || '').trim().toLowerCase();
           if (t.includes('lite')) return 'flash-lite';
           if (t.includes('pro')) return 'pro';
           if (t.includes('flash')) return 'flash';
         }
-        return 'unknown';`
-      );
-      const mode = await page.evaluate(modeFn as any);
+        return 'unknown';
+      });
       console.log(`[SessionManager] Detected model: ${mode}`);
       return mode as "flash-lite" | "flash" | "pro" | "unknown";
     } catch (e) {
@@ -245,9 +270,8 @@ export class SessionManager {
 
     const modelPatterns: Record<string, RegExp> = {
       'flash-lite': /Flash-Lite/i,
-      // Match "Flash" but NOT "Flash-Lite" (negative lookahead)
       'flash':      /Flash(?!-Lite)/i,
-      'pro':        /Pro/i,
+      'pro':        /Pro|Advanced/i, // Support "Advanced" which is often used for Pro
     };
     const pattern = modelPatterns[targetMode];
     if (!pattern) return false;
@@ -349,9 +373,11 @@ export class SessionManager {
     console.log(`[SessionManager] Current mode before nav: ${prevMode}, URL: ${currentUrl}`);
 
     // Check if we have a visible input area
-    // @ts-ignore
-    const pageCheckFn = new Function('return { hasInput: !!document.querySelector(".ql-editor,.ProseMirror,[contenteditable],textarea") }');
-    const pageCheck: any = await page.evaluate(pageCheckFn as any);
+    const pageCheck = await page.evaluate(() => {
+      // @ts-expect-error — window/document are browser globals inside page.evaluate
+      const win = (window as any);
+      return { hasInput: !!win.document.querySelector(".ql-editor,.ProseMirror,[contenteditable],textarea") };
+    });
 
     console.log(`[SessionManager] Page check: hasInput=${pageCheck.hasInput}`);
 
@@ -362,9 +388,11 @@ export class SessionManager {
     }
 
     // Re-check after navigation
-    // @ts-ignore
-    const pageCheckFn2 = new Function('return { hasInput: !!document.querySelector(".ql-editor,.ProseMirror,[contenteditable],textarea") }');
-    const pageCheck2: any = await page.evaluate(pageCheckFn2 as any);
+    const pageCheck2 = await page.evaluate(() => {
+      // @ts-expect-error — window/document are browser globals inside page.evaluate
+      const win = (window as any);
+      return { hasInput: !!win.document.querySelector(".ql-editor,.ProseMirror,[contenteditable],textarea") };
+    });
 
     if (!pageCheck2.hasInput) {
       console.log("[SessionManager] No input found, looking for New Chat...");
@@ -437,18 +465,16 @@ export class SessionManager {
     if (!page) return;
 
     try {
-      // Use Function constructor to avoid tsx arrow function transformation issues
-      // @ts-ignore
-      const pruneFn = new Function(
-        `
-        var nodes = document.querySelectorAll(
+      // Prune old conversation turns to keep the page responsive
+      await page.evaluate(() => {
+        // @ts-expect-error — window/document are browser globals inside page.evaluate
+        const win = (window as any);
+        const nodes = win.document.querySelectorAll(
           "message-content, model-response, user-message, .message-row, .conversation-turn"
         );
-
         if (nodes.length <= 6) return;
-
-        for (var i = 0; i < nodes.length - 6; i++) {
-          var wrapper =
+        for (let i = 0; i < nodes.length - 6; i++) {
+          const wrapper =
             nodes[i].closest(".message-row") ||
             nodes[i].closest(".conversation-turn") ||
             nodes[i].closest(".chat-message-group") ||
@@ -457,9 +483,7 @@ export class SessionManager {
             wrapper.parentNode.removeChild(wrapper);
           }
         }
-        `
-      );
-      await page.evaluate(pruneFn as any);
+      });
       console.log("[SessionManager] DOM pruned successfully");
     } catch (e) {
       console.warn("[SessionManager] DOM prune failed:", e);

@@ -17,6 +17,14 @@ export interface WaitForResponseResult {
 
 const SELECTOR_POOL = SELECTORS.response.join(", ");
 
+/** Clears the window.__pollState sentinel (call after timeout or completion). */
+async function clearPollState(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    // @ts-expect-error — window is a browser global inside page.evaluate
+    (window as any).__pollState = null;
+  });
+}
+
 /**
  * Single-shot DOM check — runs in browser, returns current response text or null.
  * Returns null if still waiting; returns text (possibly empty string) if done/error.
@@ -83,7 +91,7 @@ export async function waitForStableResponse(
   console.log(`[POLL] Starting (timeout=${timeoutMs}ms, poll=${pollMs}ms, stable=${stableThreshold})`);
 
   // Reset stale state
-  await page.evaluate("window.__pollState = null;");
+  await clearPollState(page);
 
   const checkFnStr = buildCheckFn(SELECTOR_POOL, baselineText, stableThreshold, timeoutMs);
   const startTime = Date.now();
@@ -98,7 +106,7 @@ export async function waitForStableResponse(
     if (result !== null) {
       // Done (result may be empty string = no response found)
       const elapsed = Date.now() - startTime;
-      await page.evaluate("window.__pollState = null;");
+      await clearPollState(page);
       if (!result) {
         console.log(`[POLL] Done but empty after ${elapsed}ms`);
         return { text: '', status: 'timeout', stable: false };
@@ -113,26 +121,31 @@ export async function waitForStableResponse(
 
   // Timed out
   const elapsed = Date.now() - startTime;
-  const result: string = await (page.evaluate("return window.__pollState ? window.__pollState.result : ''") as Promise<string>);
-  await page.evaluate("window.__pollState = null;");
+  const result: string = await page.evaluate(() => {
+    // @ts-expect-error — window is a browser global inside page.evaluate
+    const state = (window as any).__pollState;
+    return state ? state.result : '';
+  });
+  await clearPollState(page);
   console.log(`[POLL] TIMEOUT after ${elapsed}ms, result=${result ? result.length + 'chars' : 'empty'}`);
   return { text: result || '', status: 'timeout', stable: false };
 }
 
 export async function captureBaseline(page: Page): Promise<string> {
-  const baseArgs = { sel: SELECTOR_POOL };
-
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function(
-    "args",
-    "var bubbles=document.querySelectorAll(args.sel);" +
-      "if(bubbles.length===0)return '';" +
-      "var target=bubbles[bubbles.length-1];" +
-      "var c=target.closest('model-response')||target.closest('.markdown')||target.closest('.model-response-text')||target.closest('[role=\"article\"]')||target.parentElement||target;" +
-      "return c?c.innerText:'';"
-  );
-
-  const result: string = await (page.evaluate(fn as any, baseArgs as any) as Promise<any>);
+  const result: string = await page.evaluate((sel: string) => {
+    // @ts-expect-error — window is a browser global inside page.evaluate
+    const doc = (window as any).document;
+    const bubbles = doc.querySelectorAll(sel);
+    if (bubbles.length === 0) return '';
+    const target = bubbles[bubbles.length - 1];
+    const container = target.closest('model-response')
+      || target.closest('.markdown')
+      || target.closest('.model-response-text')
+      || target.closest('[role="article"]')
+      || target.parentElement
+      || target;
+    return container ? (container.innerText || '') : '';
+  }, SELECTOR_POOL);
 
   console.log(`[DEBUG captureBaseline] page URL: ${page.url()}`);
 

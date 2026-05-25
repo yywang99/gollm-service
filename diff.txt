@@ -1,0 +1,320 @@
+diff --git a/src/services/session-manager.ts b/src/services/session-manager.ts
+index 7e6d49f..7c2200c 100644
+--- a/src/services/session-manager.ts
++++ b/src/services/session-manager.ts
+@@ -41,14 +41,27 @@ export class SessionManager {
+    * Remove Angular CDK overlay backdrops that intercept pointer events.
+    */
+   private async dismissOverlays(): Promise<void> {
++    if (!this.page) return;
+     try {
+-      await this.page?.evaluate(
++      // Step 1: Remove CDK overlay backdrops and containers
++      await this.page.evaluate(
+         new Function(
+           "document.querySelectorAll(" +
+-            "'.cdk-overlay-backdrop, .cdk-overlay-transparent-backdrop, .cdk-overlay-container'" +
++            "'.cdk-overlay-backdrop, .cdk-overlay-transparent-backdrop, .cdk-overlay-container'," +
++            "'[class*=\"modal-backdrop\"], [class*=\"backdrop\"][class*=\"show\"]'," +
++            "'[role=\"dialog\"][aria-modal=\"true\"]'" +
+           ").forEach(function(el){if(el.parentNode)el.parentNode.removeChild(el);})"
+         ) as any
+       );
++      // Step 2: Press Escape to close any remaining dialogs/tooltips
++      await this.page.keyboard.press("Escape");
++      await this.page.waitForTimeout(200);
++      // Step 3: Click "新對話" button if "建立新對話" dialog appeared
++      const newChatBtn = this.page.locator('button:has-text("新對話")').first();
++      if (await newChatBtn.isVisible().catch(() => false)) {
++        await newChatBtn.click();
++        await this.page.waitForTimeout(300);
++      }
+     } catch { /* best-effort */ }
+   }
+ 
+@@ -63,8 +76,9 @@ export class SessionManager {
+ 
+   /**
+    * Apply the target mode by clicking the correct model if needed.
++   * Public so chat.ts can trigger it after setTargetMode().
+    */
+-  private async applyTargetMode(): Promise<boolean> {
++  async applyTargetMode(): Promise<boolean> {
+     if (!this._targetMode) {
+       console.log(`[SessionManager] No target mode set, skipping apply`);
+       return true;
+@@ -83,6 +97,135 @@ export class SessionManager {
+     return await this.setGeminiMode(this._targetMode);
+   }
+ 
++  /**
++   * Set thinking level to "延長" (extended thinking).
++   * Call this after applyTargetMode() when switching models.
++   */
++  async setThinkingLevel(): Promise<boolean> {
++    const page = await this.getPage();
++    if (!page) return false;
++
++    console.log(`[SessionManager] Setting thinking level to 延長...`);
++
++    try {
++      // Dismiss any overlay first
++      await this.dismissOverlays();
++      await page.waitForTimeout(300);
++
++      // Strategy: Find the thinking level control — it shows current level like "標準▾"
++      // Try multiple approaches to find and click it
++      let opened = false;
++
++      // Approach 1: Button with "標準" text (the currently-selected standard mode)
++      for (const label of ["標準", "延長", "🧠", "思考"]) {
++        try {
++          const btn = page.getByRole("button", { name: new RegExp(label) }).first();
++          if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
++            console.log(`[SessionManager] Clicking thinking button: ${label}`);
++            await btn.click();
++            opened = true;
++            break;
++          }
++        } catch { /* try next */ }
++      }
++
++      // Approach 2: Look for any button in the toolbar that has the thinking indicator
++      if (!opened) {
++        for (const sel of [
++          '[aria-label*="思考"]',
++          '[aria-label*="標準"]',
++          '[aria-label*="Thinking"]',
++          '[aria-label*="Extended"]',
++          'button[aria-haspopup="menu"]',
++        ]) {
++          try {
++            const els = page.locator(sel);
++            const count = await els.count();
++            for (let i = 0; i < count; i++) {
++              const el = els.nth(i);
++              if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
++                const txt = await el.textContent().catch(() => '') || '';
++                if (txt.trim().length > 0 && txt.trim().length < 20) {
++                  console.log(`[SessionManager] Clicking thinking control (${sel}): "${txt.trim()}"`);
++                  await el.click();
++                  opened = true;
++                  break;
++                }
++              }
++            }
++          } catch { /* try next */ }
++          if (opened) break;
++        }
++      }
++
++      if (!opened) {
++        console.log(`[SessionManager] Could not find thinking level button to open`);
++        return false;
++      }
++
++      await page.waitForTimeout(500);
++
++      // Now select "延長" in the dropdown
++      // Try by role=menuitemradio with "延長" text (radio-style selection)
++      for (const role of ["menuitemradio", "menuitem", "option", "radio", "button"] as const) {
++        try {
++          const loc = page.getByRole(role, { name: /延長/i });
++          const count = await loc.count();
++          for (let i = 0; i < count; i++) {
++            if (await loc.nth(i).isVisible({ timeout: 1000 }).catch(() => false)) {
++              console.log(`[SessionManager] ✅ Selecting 延長`);
++              await loc.nth(i).click();
++              await page.waitForTimeout(300);
++              await page.keyboard.press("Escape");
++              return true;
++            }
++          }
++        } catch { /* try next */ }
++      }
++
++      // Fallback: scan all buttons/divs inside the open menu
++      const containers = page.locator('[role="menu"], [role="listbox"], [role="dialog"]');
++      const cCount = await containers.count();
++      for (let c = 0; c < cCount; c++) {
++        const container = containers.nth(c);
++        if (!await container.isVisible({ timeout: 500 }).catch(() => false)) continue;
++        const items = container.locator("button, [role='menuitem'], [role='menuitemradio'], [role='option'], li, div[tabindex]");
++        const iCount = await items.count();
++        for (let j = 0; j < iCount; j++) {
++          const itemText = await items.nth(j).textContent().catch(() => "") || "";
++          if (/延長/i.test(itemText.trim())) {
++            console.log(`[SessionManager] ✅ Selecting 延長 via text: "${itemText.trim()}"`);
++            await items.nth(j).click();
++            await page.waitForTimeout(300);
++            await page.keyboard.press("Escape");
++            return true;
++          }
++          // Also check for "標準" to deselect it if needed
++          if (/標準/i.test(itemText.trim())) {
++            // Check if it already has a selected indicator (e.g., checkmark, bold)
++            const isSelected = await items.nth(j).evaluate((el: any) => {
++              const attr = el.getAttribute?.("aria-checked");
++              return attr === "true" || el.classList?.contains("selected");
++            }).catch(() => false);
++            if (isSelected) {
++              console.log(`[SessionManager] 延長 already selected, skipping`);
++              await page.keyboard.press("Escape");
++              return true;
++            }
++          }
++        }
++      }
++
++      await page.keyboard.press("Escape");
++      console.log(`[SessionManager] Could not find 延長 option in thinking dropdown`);
++      return false;
++    } catch (e) {
++      console.warn(`[SessionManager] setThinkingLevel error: ${e}`);
++      await page.keyboard.press("Escape").catch(() => {});
++      return false;
++    }
++  }
++
+   constructor(options: SessionManagerOptions = {}) {
+     const headlessEnv = process.env.GOLLM_BROWSER_HEADLESS === "true";
+     this.options = {
+@@ -249,39 +392,78 @@ export class SessionManager {
+       'flash':      /Flash(?!-Lite)/i,
+       'pro':        /Pro/i,
+     };
+-    const pattern = modelPatterns[targetMode];
++const pattern = modelPatterns[targetMode];
+     if (!pattern) return false;
+ 
+     await this.dismissOverlays();
+-
+     await this.dismissOverlays();
+ 
+-    // Open the model dropdown - prioritize the actual button showing the model name
++    // ── Helper: click with CDK overlay retry ──────────────────────────
++    const clickWithRetry = async (el: import("playwright").Locator, label: string, maxRetries = 2) => {
++      for (let attempt = 0; attempt <= maxRetries; attempt++) {
++        try {
++          await el.click({ timeout: 5000 });
++          return true;
++        } catch (e: any) {
++          const isOverlay = e?.message?.includes("intercepts pointer events") ||
++                            e?.message?.includes("overlay");
++          if (isOverlay && attempt < maxRetries) {
++            console.log(`[SessionManager] CDK overlay blocked ${label} click, retrying (${attempt + 1}/${maxRetries})...`);
++            await this.dismissOverlays();
++            await page.waitForTimeout(300);
++          } else if (attempt >= maxRetries) {
++            throw e;
++          }
++        }
++      }
++      return false;
++    };
++
++    // Open the model dropdown - use aria-label which is most reliable
+     let clicked = false;
+-    
+-    // First, try to find the button by its text (e.g., "Flash-Lite ▾", "3 Flash")
+-    for (const modelName of ['Flash-Lite', 'Flash', 'Pro']) {
+-      try {
+-        const btn = page.getByRole('button', { name: new RegExp(modelName, 'i') }).first();
+-        if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+-          console.log(`[SessionManager] Opening dropdown via text match: ${modelName}`);
+-          await btn.click();
+-          clicked = true;
+-          break;
++
++    // Step A: First dismiss any overlays that could be blocking
++    await this.dismissOverlays();
++    await page.waitForTimeout(500);
++
++    // Step B: Try aria-label based selector first (most specific)
++    for (const label of ['模型', 'Model', '模式', 'Mode']) {
++      const candidates = page.locator(`[aria-label*="${label}"][aria-haspopup],button[aria-label*="${label}"]`);
++      const count = await candidates.count();
++      for (let i = 0; i < count; i++) {
++        const el = candidates.nth(i);
++        if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
++          console.log(`[SessionManager] Opening dropdown via aria-label: ${label}`);
++          clicked = await clickWithRetry(el, `aria-label dropdown [${label}]`);
++          if (clicked) break;
+         }
+-      } catch { /* ignore */ }
++      }
++      if (clicked) break;
+     }
+ 
+-    // Fallback ARIA selectors (removed the old trap '[aria-label="開啟模式挑選器"]')
++    // Step C: Try button with haspopup attribute
+     if (!clicked) {
+-      for (const sel of ['[aria-label*="模型"]', '[aria-label*="Model"]', '[aria-haspopup="menu"]', '[aria-haspopup="listbox"]']) {
+-        try {
+-          const el = page.locator(sel).first();
+-          if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+-            console.log(`[SessionManager] Opening dropdown fallback: ${sel}`);
+-            await el.click(); clicked = true; break;
+-          }
+-        } catch { /* next */ }
++      const popupBtns = page.locator('button[aria-haspopup="menu"], button[aria-haspopup="listbox"]');
++      const n = await popupBtns.count();
++      for (let i = 0; i < n; i++) {
++        const el = popupBtns.nth(i);
++        if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
++          console.log(`[SessionManager] Opening dropdown via haspopup`);
++          clicked = await clickWithRetry(el, `haspopup button`);
++          if (clicked) break;
++        }
++      }
++    }
++
++    // Step D: Last resort - find the model button by current mode text
++    if (!clicked) {
++      for (const modelName of ['Pro', 'Flash', 'Flash-Lite']) {
++        const btn = page.getByRole('button', { name: new RegExp(modelName, 'i') }).first();
++        if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
++          console.log(`[SessionManager] Opening dropdown via text match: ${modelName} (current mode?)`);
++          clicked = await clickWithRetry(btn, `model button [${modelName}]`);
++          if (clicked) break;
++        }
+       }
+     }
+ 
+@@ -291,14 +473,33 @@ export class SessionManager {
+ 
+     // Click the target model
+     let modelClicked = false;
++
++    // Log what menu items are visible for debugging
++    const menuItems = page.locator('[role="menu"], [role="listbox"], [role="dialog"]');
++    const menuCount = await menuItems.count();
++    for (let mc = 0; mc < menuCount; mc++) {
++      const m = menuItems.nth(mc);
++      if (!await m.isVisible({ timeout: 500 }).catch(() => false)) continue;
++      const items = m.locator('button, [role="menuitem"], [role="menuitemradio"], [role="option"], li, div[tabindex]');
++      const iCount = await items.count();
++      const itemList: string[] = [];
++      for (let j = 0; j < Math.min(iCount, 20); j++) {
++        const txt = await items.nth(j).textContent().catch(() => '') || '';
++        const ariaLabel = await items.nth(j).getAttribute('aria-label').catch(() => '');
++        itemList.push(`"${txt.trim()}"${ariaLabel ? ` [aria-label="${ariaLabel}"]` : ''}`);
++      }
++      console.log(`[SessionManager] Menu items visible: [${itemList.join(', ')}]`);
++    }
++
+     for (const role of ['menuitemradio', 'menuitem', 'option', 'radio'] as const) {
+       try {
+         const loc = page.getByRole(role, { name: pattern });
+         const count = await loc.count();
+         for (let i = 0; i < count; i++) {
+-          if (await loc.nth(i).isVisible().catch(() => false)) {
+-            console.log(`[SessionManager] ✅ Selecting model: ${targetMode}`);
+-            await loc.nth(i).click(); modelClicked = true; break;
++          if (await loc.nth(i).isVisible({ timeout: 1000 }).catch(() => false)) {
++            console.log(`[SessionManager] ✅ Selecting model: ${targetMode} (${role} match)`);
++            await clickWithRetry(loc.nth(i), `model option [${targetMode}]`);
++            modelClicked = true; break;
+           }
+         }
+       } catch { /* next */ }

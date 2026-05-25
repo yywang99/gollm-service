@@ -64,6 +64,10 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
       if (detectedMode) {
         const session = (await import("../services/session-manager.js")).getSessionManager();
         session.setTargetMode(detectedMode);
+        // Apply immediately: click the model dropdown + set thinking to "延長"
+        await session.applyTargetMode().catch((e: any) =>
+          console.warn(`[GoLLM Chat] applyTargetMode warning: ${e?.message || e}`)
+        );
       }
     }
 

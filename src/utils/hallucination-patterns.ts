@@ -76,9 +76,11 @@ export const DEFAULT_PATTERNS: HallucinationPatterns = {
   refusalClaims: [
     // Chinese Refusals
     /我只是一個\s*(AI|人工智慧|語言模型)/i,
-    /我無法(直接)?(執行|跑|存取|修改|建立)/i,
-    /我沒有權限/i,
+    /我是.*(AI|人工智慧|語言模型)/i,
+    /我無法(直接)?(執行|跑|存取|修改|建立|連線|連接|提供)/i,
+    /我沒有.*權限/i,
     /抱歉，我不能/i,
+    /無法(直接)?替您?(執行|操作)/i,
     // English Refusals
     /I cannot (directly )?(execute|run|access|modify)/i,
     /I am (just )?an? (AI|language model)/i,

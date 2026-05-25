@@ -13,6 +13,9 @@ import { TIMINGS } from "../utils/timings.js";
 import { withMutex } from "../services/request-mutex.js";
 import { DOMDoctor } from "../services/dom-doctor.js";
 import { parseToolCalls, detectHallucination } from "../utils/tool-parser.js";
+import { PromptEngine } from "../services/prompt-engine.js";
+
+const promptEngine = new PromptEngine();
 
 const domDoctor = new DOMDoctor();
 
@@ -23,8 +26,11 @@ const HALLUCINATION_GUARD = {
 };
 
 export interface GollmMessage {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool" | "function";
   content: string | any[];
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: any[];
 }
 
 export interface GollmInput {
@@ -38,147 +44,6 @@ export interface GollmOutput {
   thinking?: string;
   finishReason: "stop" | "timeout" | "error";
   isHallucination?: boolean;
-}
-
-/**
- * Universal Content Extractor
- * Strips metadata from both OpenClaw and Hermes style messages.
- * 
- * OpenClaw metadata blocks look like:
- *   Conversation info (untrusted metadata):
- *   ```json
- *   {"sender": "...", ...}
- *   ```
- * 
- * We must strip these multi-line blocks surgically without destroying
- * the actual user message content.
- */
-function cleanContent(content: string | any[]): string {
-  let text = "";
-  if (typeof content === "string") {
-    text = content;
-  } else if (Array.isArray(content)) {
-    text = content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n");
-  }
-
-  // 1. Strip OpenClaw multi-line metadata blocks:
-  //    "Label (untrusted metadata):\n```json\n{...}\n```"
-  //    Also handles: "Label (untrusted, for context):\n```json\n{...}\n```"
-  const metadataBlockPattern = /[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\n```(?:json)?\n[\s\S]*?\n```/gi;
-  text = text.replace(metadataBlockPattern, '');
-
-  // 2. Strip any remaining single-line metadata headers (safety net)
-  text = text.replace(/^[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):[^\n]*$/gim, '');
-
-  // 3. Strip generic [Metadata] single-line markers
-  text = text.replace(/^\[Metadata\][^\n]*$/gim, '');
-
-  // 4. Clean up resulting blank lines
-  text = text.replace(/\n{3,}/g, '\n\n').trim();
-
-  return text;
-}
-
-function extractLatestUserMessage(messages: GollmMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      return cleanContent(messages[i].content);
-    }
-  }
-  return "";
-}
-
-function isSameConversation(oldMsgs: GollmMessage[], newMsgs: GollmMessage[]): boolean {
-  if (!oldMsgs || oldMsgs.length === 0) return false;
-  if (!newMsgs || newMsgs.length === 0) return false;
-  
-  const oldFirstUser = oldMsgs.find(m => m.role === "user");
-  const newFirstUser = newMsgs.find(m => m.role === "user");
-  
-  if (!oldFirstUser || !newFirstUser) return false;
-  
-  const oldText = cleanContent(oldFirstUser.content);
-  const newText = cleanContent(newFirstUser.content);
-  
-  if (!oldText || !newText) return false;
-  return oldText.slice(0, 100) === newText.slice(0, 100);
-}
-
-/**
- * Formats a stateless message array into a stateful transcript for Web UI.
- * This is used when we detect a context shift (e.g. from Hermes).
- */
-function formatTranscript(messages: GollmMessage[], tools?: any[]): string {
-  let transcript = "";
-  
-  if (tools && tools.length > 0) {
-    transcript += `[System Instructions - Available Tools]\n`;
-    transcript += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\n`;
-    transcript += `<tool_call>\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n</tool_call>\n\n`;
-    transcript += `Available Tools:\n${JSON.stringify(tools, null, 2)}\n\n`;
-  }
-
-  for (const msg of messages) {
-    const text = cleanContent(msg.content);
-    const rawLen = typeof msg.content === 'string' ? msg.content.length : -1;
-    console.log(`[GoLLM Transcript] role=${msg.role} raw=${rawLen} cleaned=${text.length} preview="${text.slice(0, 120).replace(/\n/g, '\\n')}"`);
-    if (!text) continue;
-
-    if (msg.role === "system") {
-      transcript += `[Instructions]:\n${text}\n\n`;
-    } else if (msg.role === "user") {
-      transcript += `[User]:\n${text}\n\n`;
-    } else if (msg.role === "assistant") {
-      transcript += `[Assistant]:\n${text}\n\n`;
-    }
-  }
-
-  if (messages.length > 0 && messages[messages.length - 1].role === "user") {
-    transcript += `[Assistant]:\n`;
-  }
-
-  // ── [Phase 4] STRICT SYSTEM REMINDER ──────────────────────────────────
-  // Inject hard constraints BEFORE the user prompt when the user is asking
-  // for file modifications or shell commands. This prevents the chatbot bias
-  // where Gemini Web claims "I already did it" or "I cannot do it" without outputting action tags.
-  const lastUserMsg = messages.length > 0 ? messages[messages.length - 1] : null;
-  if (lastUserMsg && lastUserMsg.role === "user") {
-    const userText = cleanContent(lastUserMsg.content);
-    // Broadened regex to catch any intent that might require tools/skills
-    const intentPattern = /(修改|變更|建立|建立|刪除|執行|跑|更新|編輯|run|execute|create|modify|delete)/i;
-    if (intentPattern.test(userText)) {
-      transcript += `
-[STRICT SYSTEM REMINDER - NON-NEGOTIABLE]
-CRITICAL: You are connected to an execution environment (OpenClaw/Hermes). You DO have the ability to run shell commands and modify files by outputting the specific TOOL CALL formats described in your [Instructions] section.
-- Do NOT apologize or say you cannot execute commands. (e.g. "I am an AI and cannot...")
-- Do NOT pretend to have completed the task without actually outputting the tool call tags.
-- Every action must be requested via the proper tool call syntax.
-- DO NOT wrap your tool calls in markdown code blocks (like \`\`\`xml). Output the raw tags directly into the text.
-`;
-    }
-  }
-
-  console.log(`[GoLLM Transcript] Final transcript length: ${transcript.length}`);
-  return transcript.trim();
-}
-
-function determinePromptStrategy(session: any, messages: GollmMessage[], tools?: any[]): { text: string; requireNewChat: boolean } {
-  if (!messages || messages.length === 0) return { text: "", requireNewChat: false };
-  
-  const oldMsgs = session.getLastProcessedMessages() || [];
-  
-  // If the conversation history matches, just send the latest message (Incremental)
-  if (isSameConversation(oldMsgs, messages)) {
-    const newText = extractLatestUserMessage(messages);
-    if (newText) {
-      console.log(`[GoLLM Strategy] Incremental mode, sending latest user message (${newText.length} chars): "${newText.slice(0, 100).replace(/\n/g, '\\n')}"`);
-      return { text: newText, requireNewChat: false };
-    }
-  }
-  
-  // Otherwise, re-send the whole context (Stateless to Stateful translation)
-  console.log(`[GoLLM Strategy] Context shift detected, building full transcript`);
-  return { text: formatTranscript(messages, tools), requireNewChat: true };
 }
 
 // ─── Input injection ───────────────────────────────────────────────────────
@@ -212,10 +77,7 @@ async function trySelectorPool(page: Page, type: SelectorType): Promise<string |
 async function typeInput(page: Page, text: string): Promise<void> {
   // Step 1: Try the DOMDoctor-cached selector first
   let currentSelector = domDoctor.getSelector("input") || SELECTORS.input[0];
-
   let workingSelector: string | null = null;
-
-  // Step 2: Try the cached selector, then the whole pool before escalating to AI
   const candidates = [
     currentSelector,
     ...SELECTORS.input.filter(s => s !== currentSelector),
@@ -253,31 +115,41 @@ async function typeInput(page: Page, text: string): Promise<void> {
     );
   }
 
-  const inputEl = await page.$(workingSelector);
-  if (!inputEl) throw new Error(`Cannot find input element: ${workingSelector}`);
+  const inputLocator = page.locator(workingSelector);
+  await inputLocator.scrollIntoViewIfNeeded();
 
-  await inputEl.scrollIntoViewIfNeeded();
-  await inputEl.click();
-  await inputEl.focus();
+  // Dismiss any overlays that might be blocking the input (new chat page animations, etc.)
+  await page.evaluate(() => {
+    // @ts-expect-error — window/document are browser globals inside page.evaluate
+    const win = (window as any);
+    const selectors = [
+      '.cdk-overlay-backdrop',
+      '.cdk-overlay-transparent-backdrop',
+      '.cdk-overlay-container',
+      '[class*="modal-backdrop"]',
+      '[class*="backdrop"][class*="show"]',
+      '[role="dialog"][aria-modal="true"]',
+    ];
+    const combined = selectors.join(',');
+    win.document.querySelectorAll(combined).forEach((el: any) => {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
+  });
 
-  // Clear existing text
-  const isMac = process.platform === "darwin";
-  await page.keyboard.down(isMac ? "Meta" : "Control");
-  await page.keyboard.press("a");
-  await page.keyboard.up(isMac ? "Meta" : "Control");
-  await page.keyboard.press("Backspace");
+  // Use evaluate + dispatchEvent instead of fill() to bypass contenteditable editable-check
+  // fill() fails on Gemini's contenteditable div even though contenteditable="true"
+  await page.evaluate(({ sel, txt }: { sel: string; txt: string }) => {
+    // @ts-expect-error — window/InputEvent are browser globals
+    const win = window as any;
+    const el = win.document.querySelector(sel);
+    if (el) {
+      el.focus();
+      el.textContent = txt;
+      el.dispatchEvent(new win.InputEvent('input', { bubbles: true, inputType: 'insertText', data: txt }));
+    }
+  }, { sel: workingSelector, txt: text });
 
-  // Inject text via page.evaluate for speed and stability with long prompts
-  const injectFn = new Function("args",
-    "var el=document.querySelector(args.s); if(!el)return;" +
-    "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT'){el.value=args.t;}else{el.innerText=args.t;}" +
-    "['input','change','keyup'].forEach(function(n){el.dispatchEvent(new Event(n,{bubbles:true}));});"
-  );
-  await page.evaluate(injectFn as any, { s: workingSelector, t: text } as any);
-
-  // Trigger UI update
-  await page.keyboard.type(" ");
-  await page.keyboard.press("Backspace");
+  console.log(`[GoLLM] Input injected via evaluate()`);
 }
 
 async function clickSend(page: Page): Promise<void> {
@@ -339,34 +211,18 @@ Please try again and issue the correct tool call.
 `.trim();
 
   const currentSelector = domDoctor.getSelector("input") || SELECTORS.input[0];
-
-  // Type the observation into the chat input (does NOT click send)
-  const inputEl = await page.$(currentSelector);
-  if (!inputEl) {
+  const inputLocator = page.locator(currentSelector);
+  if (await inputLocator.count() === 0) {
     console.warn("[GoLLM Hallucination Guard] Cannot find input to inject observation");
     return;
   }
 
-  await inputEl.click();
-  await inputEl.focus();
+  await inputLocator.scrollIntoViewIfNeeded();
+  await inputLocator.click();
+  await inputLocator.focus();
 
-  // Clear and inject observation text
-  const isMac = process.platform === "darwin";
-  await page.keyboard.down(isMac ? "Meta" : "Control");
-  await page.keyboard.press("a");
-  await page.keyboard.up(isMac ? "Meta" : "Control");
-  await page.keyboard.press("Backspace");
-
-  const injectFn = new Function(
-    "args",
-    "var el=document.querySelector(args.s); if(!el)return;" +
-    "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT'){el.value=args.t;}else{el.innerText=args.t;}" +
-    "['input','change','keyup'].forEach(function(n){el.dispatchEvent(new Event(n,{bubbles:true}));});"
-  );
-  await page.evaluate(injectFn as any, { s: currentSelector, t: observationPrompt } as any);
-  await page.keyboard.type(" ");
-  await page.keyboard.press("Backspace");
-
+  console.log("[GoLLM Hallucination Guard] Injecting observation via fill()...");
+  await inputLocator.fill(observationPrompt);
   console.log("[GoLLM Hallucination Guard] System Observation injected, waiting for Gemini response...");
 }
 
@@ -442,7 +298,7 @@ export async function executeGollmRPA(
       userDataDir: playwrightConfig?.userDataDir,
     });
 
-    const promptData = determinePromptStrategy(session, messages, tools);
+    const promptData = promptEngine.determinePromptStrategy(session, messages, tools);
     if (!promptData.text) throw new Error("No prompt extracted.");
 
     const page = await session.getPage();
