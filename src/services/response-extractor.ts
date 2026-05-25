@@ -85,10 +85,23 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
         var elapsedSinceGenDone = Date.now() - _S.generationDoneTime;
         if (elapsedSinceGenDone >= ${postGenBufferMs}) {
           _S.stableCount++;
+        } else {
+          // Buffer not elapsed yet — reset stableCount to be safe
+          // This prevents any stability from accumulating during the buffer window
+          _S.stableCount = 0;
         }
       }
     } else {
       _S.stableCount = 0;
+    }
+
+    // If we've waited past buffer but keep getting no content, force completion
+    if (!ct && _S.lastText && !isGenerating && _S.generationDoneTime > 0) {
+      var elapsedSinceGenDone = Date.now() - _S.generationDoneTime;
+      if (elapsedSinceGenDone >= ${postGenBufferMs} + 5000) {
+        _S.done = true;
+        _S.result = _S.lastText;
+      }
     }
 
     if (_S.stableCount >= ${stableThr}) { _S.done = true; _S.result = ct; }
