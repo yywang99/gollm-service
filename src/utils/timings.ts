@@ -37,4 +37,8 @@ export const POLLING = {
   STABLE_THRESHOLD: 10,
 
   // That's 5 seconds of stable response = done
+  // Minimum wait after generation completes (stop button disappears).
+  // This gives streaming content (e.g. tool_call JSON blocks) time to fully render
+  // before the stability check kicks in. Prevents premature capture of partial JSON.
+  POST_GENERATION_BUFFER_MS: 2000,
 };

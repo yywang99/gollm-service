@@ -29,17 +29,21 @@ async function clearPollState(page: Page): Promise<void> {
  * Single-shot DOM check — runs in browser, returns current response text or null.
  * Returns null if still waiting; returns text (possibly empty string) if done/error.
  */
-function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs: number): string {
+function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs: number, postGenBufferMs: number): string {
   const safeStr = JSON.stringify(oldText);
   return `(function(){
-    var _S = window.__pollState = window.__pollState || {lastText:'',stableCount:0,startTime:Date.now(),done:false,result:''};
+    var _S = window.__pollState = window.__pollState || {lastText:'',stableCount:0,startTime:Date.now(),done:false,result:'',generationDoneTime:0};
     if (_S.done) return _S.result;
     if (Date.now() - _S.startTime > ${timeoutMs}) { _S.done = true; _S.result = ''; return ''; }
 
     var stopBtn = document.querySelector('button[aria-label*="Stop"], button[aria-label*="停止"], button[aria-label*="中斷"]');
     var isGenerating = !!(stopBtn && stopBtn.offsetHeight > 0);
 
-    // Try primary selectors
+    // Track when generation first completes (stop button disappears)
+    if (!isGenerating && _S.generationDoneTime === 0) {
+      _S.generationDoneTime = Date.now();
+    }
+
     var b = document.querySelectorAll('${sel}');
     var ct = '';
     if (b.length > 0) {
@@ -48,10 +52,8 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
       ct = (c ? c.innerText : '') || '';
     }
 
-    // Strip UI boilerplates at the beginning of the response
     ct = ct.replace(/^(?:顯示程式碼\\s*|Show code\\s*)?(?:顯示思路\\s*|Show thought process\\s*)?(?:Gemini 說了|Gemini said|Gemini says|Gemini)\\s*/i, '').trim();
 
-    // Fallback: body text stripped of thinking indicator and input
     if (!ct || ct === ${safeStr}) {
       var body = document.body ? document.body.innerText : '';
       ct = body
@@ -69,13 +71,23 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
       if (ct === ${safeStr} || ct === '') ct = '';
     }
 
-    if (ct && ct !== ${safeStr}) {
-      if (ct === _S.lastText && !isGenerating) { _S.stableCount++; }
-      else { _S.stableCount = 0; _S.lastText = ct; }
-      if (_S.stableCount >= ${stableThr}) { _S.done = true; _S.result = ct; }
-    } else { _S.stableCount = 0; }
+    if (ct && ct !== _S.lastText) {
+      _S.stableCount = 0;
+      _S.lastText = ct;
+    } else if (ct && ct === _S.lastText) {
+      // Only count toward stability AFTER the post-generation buffer has elapsed
+      // This prevents premature capture of streaming content (e.g. partial tool_call JSON)
+      if (!isGenerating && _S.generationDoneTime > 0) {
+        var elapsedSinceGenDone = Date.now() - _S.generationDoneTime;
+        if (elapsedSinceGenDone >= ${postGenBufferMs}) {
+          _S.stableCount++;
+        }
+      }
+    } else {
+      _S.stableCount = 0;
+    }
 
-    // Return null = keep polling, return string = done (may be empty)
+    if (_S.stableCount >= ${stableThr}) { _S.done = true; _S.result = ct; }
     return _S.done ? _S.result : null;
   })()`;
 }
@@ -87,13 +99,14 @@ export async function waitForStableResponse(
   const timeoutMs = LIMITS.RESPONSE_TIMEOUT_MS;
   const pollMs = POLLING.POLL_INTERVAL_MS;
   const stableThreshold = POLLING.STABLE_THRESHOLD;
+  const postGenBufferMs = POLLING.POST_GENERATION_BUFFER_MS;
 
-  console.log(`[POLL] Starting (timeout=${timeoutMs}ms, poll=${pollMs}ms, stable=${stableThreshold})`);
+  console.log(`[POLL] Starting (timeout=${timeoutMs}ms, poll=${pollMs}ms, stable=${stableThreshold}, postGenBuffer=${postGenBufferMs}ms)`);
 
   // Reset stale state
   await clearPollState(page);
 
-  const checkFnStr = buildCheckFn(SELECTOR_POOL, baselineText, stableThreshold, timeoutMs);
+  const checkFnStr = buildCheckFn(SELECTOR_POOL, baselineText, stableThreshold, timeoutMs, postGenBufferMs);
   const startTime = Date.now();
   const deadline = startTime + timeoutMs;
 
