@@ -34,11 +34,13 @@ export const POLLING = {
   POLL_INTERVAL_MS: 500,
 
   // Number of consecutive stable polls before considering response done
-  STABLE_THRESHOLD: 10,
+  // Increased from 10 to 15 to give complex streaming content (Python code,
+  // nested JSON in tool_calls) more time to fully settle in DOM before capture.
+  STABLE_THRESHOLD: 15,
 
-  // That's 5 seconds of stable response = done
+  // That's 7.5 seconds of stable response = done
   // Minimum wait after generation completes (stop button disappears).
   // This gives streaming content (e.g. tool_call JSON blocks) time to fully render
-  // before the stability check kicks in. Prevents premature capture of partial JSON.
-  POST_GENERATION_BUFFER_MS: 5000,
+  // before stability is assessed. Complex FB/LI links with nested code need 8+ seconds.
+  POST_GENERATION_BUFFER_MS: 8000,
 };
