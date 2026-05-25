@@ -42,17 +42,23 @@ npm run build && node dist/server/http-server.js
     "gollm": {
       "provider": "custom",
       "baseURL": "http://127.0.0.1:3001/v1",
-      "apiKey": "dummy",
-      "model": "gemini-think"
+      "apiKey": "not-required",
+      "model": "pro"
     }
   }
 }
 ```
 
 ### 支援模型
-- `gemini-fast`: Gemini Flash 快捷模式
-- `gemini-think`: Gemini 深度思考模式 (Thinking Process)
-- `gemini-pro`: Gemini Pro 標準模式
+- `flash-lite`: Gemini Flash-Lite（行動版 / 最低延遲）
+- `flash`: Gemini Flash（快速回覆）
+- `pro`: Gemini Pro（標準深度回覆，預設）
+
+在請求中指定：
+```json
+{ "model": "pro", "messages": [...] }
+```
+模型名稱不區分大小寫，`"Pro"`、`"gemini-pro"` 都能正確匹配。
 
 ## 📁 設定與部署
 
