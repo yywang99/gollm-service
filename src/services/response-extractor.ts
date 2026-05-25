@@ -48,14 +48,18 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
     var ct = '';
     if (b.length > 0) {
       var last = b[b.length - 1];
-      var c = last.closest('model-response') || last.closest('.markdown') || last.closest('.model-response-text') || last.parentElement || last;
-      ct = (c ? c.innerText : '') || '';
+      var c = last.closest('model-response') || last.closest('.markdown') || last.closest('.model-response-text') || last.closest('[role="article"]') || last.parentElement || last;
+      // Use textContent instead of innerText — innerText triggers CSS layout recalc
+      // and can return stale/cutoff content during streaming. textContent reads raw
+      // text synchronously and is faster for polling.
+      ct = (c ? (c.textContent || c.innerText) : '') || '';
     }
 
     ct = ct.replace(/^(?:顯示程式碼\\s*|Show code\\s*)?(?:顯示思路\\s*|Show thought process\\s*)?(?:Gemini 說了|Gemini said|Gemini says|Gemini)\\s*/i, '').trim();
 
     if (!ct || ct === ${safeStr}) {
-      var body = document.body ? document.body.innerText : '';
+      // Use textContent here too — innerText can lag during streaming
+      var body = document.body ? (document.body.textContent || document.body.innerText) : '';
       ct = body
         .replace(/思考型[\\s\\S]*/gi, '')
         .replace(/Gemini[\\s\\S]*輸入[^\\n]*/gi, '')

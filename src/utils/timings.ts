@@ -40,5 +40,5 @@ export const POLLING = {
   // Minimum wait after generation completes (stop button disappears).
   // This gives streaming content (e.g. tool_call JSON blocks) time to fully render
   // before the stability check kicks in. Prevents premature capture of partial JSON.
-  POST_GENERATION_BUFFER_MS: 2000,
+  POST_GENERATION_BUFFER_MS: 3000,
 };
