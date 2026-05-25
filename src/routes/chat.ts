@@ -9,6 +9,13 @@ interface ChatBody {
   stream?: boolean;
 }
 
+// Track in-flight prompt size for health reporting
+let currentPromptSize = 0;
+
+export function getCurrentPromptSize(): number {
+  return currentPromptSize;
+}
+
 export async function chatRoute(fastify: FastifyInstance, opts: { config: any }) {
   fastify.post("/v1/chat/completions", async (request: FastifyRequest<{ Body: ChatBody }>, reply: FastifyReply) => {
     const { messages = [], tools = [] } = request.body || {};
@@ -72,6 +79,12 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
     }
 
     try {
+      // Track prompt size for health endpoint
+      currentPromptSize = (filteredMessages as any[]).reduce(
+        (sum: number, m: any) => sum + (typeof m.content === "string" ? m.content.length : 0),
+        0
+      );
+
       // 3. RPA Execution
       const result = await executeGollmRPA(
         { messages: filteredMessages as any, tools, thinkingLog },

@@ -1,0 +1,20 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3001
+  },
+  "playwright": {
+    "headless": true,
+    "userDataDir": "~/.openclaw/gollm-playwright-profile",
+    "stealth": true
+  },
+  "model": {
+    "default": "pro",
+    "timeoutSeconds": 120
+  },
+  "env": {
+    "GOLLM_BROWSER_HEADLESS": "true",
+    "GOLLM_USER_DATA_DIR": "~/.openclaw/gollm-playwright-profile"
+  },
+  "_comment": "This is a template. Copy this file to service.gollmrc.json to configure the service."
+}

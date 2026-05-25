@@ -28,6 +28,8 @@ export class SessionManager {
   private options: SessionManagerOptions;
   private lastProcessedMessages: any[] = [];
   private _targetMode: "flash-lite" | "flash" | "pro" | null = null;
+  private _lastError: string | null = null;
+  private _lastErrorTime: number | null = null;
 
   getLastProcessedMessages(): any[] {
     return this.lastProcessedMessages;
@@ -35,6 +37,17 @@ export class SessionManager {
 
   setLastProcessedMessages(msgs: any[]) {
     this.lastProcessedMessages = msgs;
+  }
+
+  getLastError(): { message: string; time: number } | null {
+    if (!this._lastError) return null;
+    return { message: this._lastError, time: this._lastErrorTime ?? 0 };
+  }
+
+  setLastError(message: string): void {
+    this._lastError = message;
+    this._lastErrorTime = Date.now();
+    console.warn(`[SessionManager] Last error updated: ${message}`);
   }
 
   /**
@@ -103,6 +116,7 @@ export class SessionManager {
     }
 
     console.error(`[SessionManager] Failed to switch to ${this._targetMode} after ${maxAttempts} attempts. Giving up to prevent loop.`);
+    this.setLastError(`Model switch to "${this._targetMode}" failed after ${maxAttempts} attempts`);
     return false; // Return false so the caller knows it failed, but we stop trying here
   }
 
@@ -417,6 +431,7 @@ export class SessionManager {
         }
       } catch (e) {
         console.log("[SessionManager] Error clicking New Chat: " + e + " - falling back to direct navigation...");
+        this.setLastError(`startNewChat click failed: ${e}`);
         await page.goto("https://gemini.google.com/app#new", { waitUntil: "domcontentloaded" });
         await page.waitForTimeout(2000);
       }
@@ -448,6 +463,7 @@ export class SessionManager {
       }
     } catch (e) {
       console.log("[SessionManager] Error starting new chat via click: " + e + " - falling back to navigation...");
+      this.setLastError(`startNewChat (fallback nav): ${e}`);
       await page.goto("https://gemini.google.com/app", { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(2000);
     }
@@ -487,6 +503,7 @@ export class SessionManager {
       console.log("[SessionManager] DOM pruned successfully");
     } catch (e) {
       console.warn("[SessionManager] DOM prune failed:", e);
+      this.setLastError(`DOM prune failed: ${e}`);
     }
   }
 

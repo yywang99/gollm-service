@@ -30,6 +30,17 @@ getSessionManager({
 const HOST = config.server?.host || "127.0.0.1";
 const PORT = config.server?.port || 3001;
 
+// Track server start time for uptime reporting in /health
+const SERVER_START_TIME = Date.now();
+
+/**
+ * Returns the server start timestamp (ms since epoch).
+ * Returns 0 if the server hasn't started yet.
+ */
+export function getServerStartTime(): number {
+  return SERVER_START_TIME;
+}
+
 const fastify = Fastify({
   logger: {
     level: "info",
