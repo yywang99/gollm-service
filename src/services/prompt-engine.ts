@@ -47,12 +47,14 @@ export class PromptEngine {
     if (!oldMsgs || oldMsgs.length === 0) return false;
     if (!newMsgs || newMsgs.length === 0) return false;
     if (newMsgs.length <= oldMsgs.length) return false;
-    
+
+    // Role-based comparison: if the first N messages have the same roles
+    // as the previous turn, treat it as the same conversation.
+    // Content comparison is unreliable because OpenClaw regenerates metadata
+    // blocks on every turn (e.g. "Conversation info" vs "Conversation context"),
+    // which causes false mismatches even when the actual conversation is the same.
     for (let i = 0; i < oldMsgs.length; i++) {
-      const oldMsg = oldMsgs[i];
-      const newMsg = newMsgs[i];
-      if (oldMsg.role !== newMsg.role) return false;
-      if (this.cleanContent(oldMsg.content) !== this.cleanContent(newMsg.content)) return false;
+      if (oldMsgs[i].role !== newMsgs[i].role) return false;
     }
     return true;
   }
@@ -68,11 +70,14 @@ export class PromptEngine {
       if (msg.role === "assistant") continue;
       const text = this.cleanContent(msg.content);
       if (!text) continue;
-      
+
+      // Skip system messages in incremental mode — the full transcript on first turn
+      // already established the system context. Re-injecting it every turn causes
+      // Gemini to re-process it and can interfere with conversation continuity.
+      if (msg.role === "system") continue;
+
       if (msg.role === "user") {
         prompt += `${text}\\n\\n`;
-      } else if (msg.role === "system") {
-        prompt += `[System Instruction Update]:\\n${text}\\n\\n`;
       } else if (msg.role === "tool" || msg.role === "function") {
         const toolName = (msg.name || msg.tool_call_id || "tool").replace(/__/g, ':');
         prompt += `[Tool Output (${toolName})]:\\n${text}\\n\\n`;

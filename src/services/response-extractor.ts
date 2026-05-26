@@ -104,8 +104,21 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
       }
     }
 
-    if (_S.stableCount >= ${stableThr}) { _S.done = true; _S.result = ct; }
-    return _S.done ? _S.result : null;
+    // Additional minimum wait after buffer — even if content keeps changing,
+  // we need to give slow streaming (Python code with nested strings) time to complete.
+  // Buffer (8s) + MIN_STABLE_WAIT (8s) = 16s minimum, then use whatever we have.
+  var minStableWaitMs = 8000;
+  if (_S.generationDoneTime > 0 && !isGenerating) {
+    var elapsedSinceGenDone = Date.now() - _S.generationDoneTime;
+    if (elapsedSinceGenDone >= ${postGenBufferMs} + minStableWaitMs) {
+      _S.done = true;
+      _S.result = ct || _S.lastText;
+    }
+  }
+
+  // Standard stability check
+  if (_S.stableCount >= ${stableThr}) { _S.done = true; _S.result = ct || _S.lastText; }
+  return _S.done ? _S.result : null;
   })()`;
 }
 
