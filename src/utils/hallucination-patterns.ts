@@ -76,17 +76,15 @@ export const DEFAULT_PATTERNS: HallucinationPatterns = {
   refusalClaims: [
     // Chinese Refusals
     /我只是一個\s*(AI|人工智慧|語言模型)/i,
-    /我是.*(AI|人工智慧|語言模型)/i,
+    // Must have AI identification AND inability/refusal — avoids false positives
+    // on normal self-introductions like "我是一個由 Google 開發的 AI 協作者"
+    /我是.*(AI|人工智慧|語言模型).*(無法|不能|沒有能力|做不到)/i,
+    /我是.*(AI|人工智慧|語言模型).*所以.*(無法|不能)/i,
     /我無法(直接)?(執行|跑|存取|修改|建立|連線|連接|提供)/i,
     /我沒有.*權限/i,
     /抱歉，我不能/i,
     /無法(直接)?替您?(執行|操作)/i,
-    // English Refusals
-    /I cannot (directly )?(execute|run|access|modify)/i,
-    /I am (just )?an? (AI|language model)/i,
-    /I do not have access to/i,
-    /I don't have access to/i,
-    /I'm unable to (execute|run|access)/i,
+    // English Refusals\n    /I cannot (directly )?(execute|run|access|modify)/i,\n    /I am (just )?an? (AI|language model)/i,\n    /I do not have access to/i,\n    /I don't have access to/i,\n    /I'm unable to (execute|run|access)/i,\n    /I(.?)m having (a )?hard time (fulfilling|understanding|with)/i,\n    /can(.?)t (fulfill|help with|assist with)/i,\n    /not able to (help|assist|fulfill)/i,
   ],
 };
 

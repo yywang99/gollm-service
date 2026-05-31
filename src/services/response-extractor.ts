@@ -39,8 +39,16 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
     var stopBtn = document.querySelector('button[aria-label*="Stop"], button[aria-label*="停止"], button[aria-label*="中斷"]');
     var isGenerating = !!(stopBtn && stopBtn.offsetHeight > 0);
 
-    // Track when generation first completes (stop button disappears)
-    if (!isGenerating && _S.generationDoneTime === 0) {
+    // Track when generation truly completes (stop button disappears).
+    // IMPORTANT: If isGenerating becomes true again after being false (e.g. Gemini
+    // thinking phase ends → streaming phase begins → stop btn reappears), we must
+    // RESET generationDoneTime so the buffer starts from the real completion, not
+    // from the flicker during the thinking→streaming transition.
+    if (isGenerating && _S.generationDoneTime > 0) {
+      // Stop button came back — generation still in progress, reset the timer
+      _S.generationDoneTime = 0;
+      _S.stableCount = 0;
+    } else if (!isGenerating && _S.generationDoneTime === 0) {
       _S.generationDoneTime = Date.now();
     }
 
@@ -116,8 +124,27 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
     }
   }
 
-  // Standard stability check
-  if (_S.stableCount >= ${stableThr}) { _S.done = true; _S.result = ct || _S.lastText; }
+  // Standard stability check — but apply a minimum length floor.
+  // Don't declare done on a very short result unless we've waited extra long
+  // (guarding against 56-char thinking-phase truncation).
+  // 60 chars: enough to filter streaming partials, but allows short complete answers.
+  var MIN_RESPONSE_LENGTH = 60;
+  var finalResult = ct || _S.lastText;
+  if (_S.stableCount >= ${stableThr}) {
+    if (finalResult.length >= MIN_RESPONSE_LENGTH) {
+      _S.done = true;
+      _S.result = finalResult;
+    } else if (_S.generationDoneTime > 0 && !isGenerating) {
+      // Short result but generation truly done — wait at least one extra buffer
+      // before accepting (gives streaming more time to deliver the rest)
+      var elapsedSinceGenDone = Date.now() - _S.generationDoneTime;
+      if (elapsedSinceGenDone >= ${postGenBufferMs} * 2) {
+        _S.done = true;
+        _S.result = finalResult;
+      }
+      // else: keep polling, don't declare done on a short partial
+    }
+  }
   return _S.done ? _S.result : null;
   })()`;
 }

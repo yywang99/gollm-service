@@ -7,8 +7,9 @@
  */
 
 export class PromptEngine {
-  private readonly MAX_TRANSCRIPT_LENGTH = 80000;
+  private readonly MAX_TRANSCRIPT_LENGTH = 30000;  // Reduced from 80000 — Gemini hangs on >50KB context
   private readonly MAX_TOOLS_SECTION_LENGTH = 8000;
+  private readonly MAX_TOOL_OUTPUT_LENGTH = 3000;   // Per-message cap: prevents a single cat/ls from eating 35KB
 
   /**
    * Strips metadata from both OpenClaw and Hermes style messages.
@@ -150,21 +151,35 @@ export class PromptEngine {
     let transcript = "";
     
     if (tools && tools.length > 0) {
+      // ── [URL Handling] General guidance to prevent timeout ────────────────────
+      transcript += `[Important: URL Handling]\n`;
+      transcript += `When you encounter a URL in the user's message (especially GitHub URLs), do NOT attempt to process it yourself.\n`;
+      transcript += `You MUST use the web_fetch tool to retrieve the content first, then analyze the fetched content.\n`;
+      transcript += `IMPORTANT: Output ONLY the tool_call block without any explanatory text or preamble.\n`;
+      transcript += `Example correct response: <tool_call>\n{"name": "web_fetch", "arguments": {"url": "https://github.com/..."}}\n</tool_call>\n`;
+      transcript += `Example WRONG response: "Let me fetch that URL for you..." <tool_call>...\n</tool_call>\n\n`;
+
       transcript += `[System Instructions - Available Tools]\\n`;
       transcript += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\\n`;
       transcript += `<tool_call>\\n{\"name\": \"tool_name\", \"arguments\": {\"arg1\": \"value1\"}}\\n</tool_call>\\n\\n`;
       
-      let toolsJson = JSON.stringify(tools, null, 2);
-      if (toolsJson.length > this.MAX_TOOLS_SECTION_LENGTH) {
-        const budgetPerTool = 300;
-        const maxTools = Math.max(3, Math.floor(this.MAX_TOOLS_SECTION_LENGTH / budgetPerTool));
-        const truncatedTools = tools.slice(0, maxTools);
-        toolsJson = JSON.stringify(truncatedTools, null, 2);
-        const remaining = tools.length - maxTools;
-        if (remaining > 0) {
-          toolsJson += `\\n// ... ${remaining} more tools available (not shown for context limit)`;
+      const includedTools = [];
+      let currentToolsLen = 0;
+      for (const t of tools) {
+        const tStr = JSON.stringify(t, null, 2);
+        if (currentToolsLen + tStr.length > this.MAX_TOOLS_SECTION_LENGTH && includedTools.length > 0) {
+          break;
         }
+        includedTools.push(t);
+        currentToolsLen += tStr.length;
       }
+      
+      let toolsJson = JSON.stringify(includedTools, null, 2);
+      const remaining = tools.length - includedTools.length;
+      if (remaining > 0) {
+        toolsJson += `\\n// ... ${remaining} more tools available (not shown for context limit)`;
+      }
+      
       transcript += `Available Tools:\\n${toolsJson}\\n\\n`;
     }
 
@@ -204,7 +219,11 @@ if (msg.role === "system") {
         }
       } else if (msg.role === "tool" || msg.role === "function") {
         const toolName = (msg.name || msg.tool_call_id || "tool").replace(/__/g, ':');
-        transcript += `--- Tool Output (${toolName}) ---\\n${text}\\n\\n`;
+        // Truncate very large tool outputs (e.g. cat <large_file>) to prevent context overflow
+        const truncatedText = text.length > this.MAX_TOOL_OUTPUT_LENGTH
+          ? text.slice(0, this.MAX_TOOL_OUTPUT_LENGTH) + `\n... [truncated ${text.length - this.MAX_TOOL_OUTPUT_LENGTH} chars]`
+          : text;
+        transcript += `--- Tool Output (${toolName}) ---\\n${truncatedText}\\n\\n`;
       }
     }
 
@@ -228,11 +247,31 @@ const lastRole = messages.length > 0 ? messages[messages.length - 1].role : "";
 // CRITICAL: Check if the system prompt has changed.
     // Even if the same chat_id, a change in the system prompt (e.g. after RPA restart or config update)
     // must trigger a new chat to ensure the new instructions are applied.
+    // EXCEPTION: Hermes injects transient model-switch notes like:
+    //   "[Note: model was just switched from X to Y via Z. Adjust...]"
+    // These are NOT real system changes — strip them before comparing.
+    const stripModelSwitchNotes = (content: any): string => {
+      const raw = typeof content === 'string' ? content : JSON.stringify(content ?? '');
+      return raw.replace(/\[Note: model was just switched[^\]]*\]\s*/gi, '').trim();
+    };
     const oldSystem = oldMsgs.find((m: any) => m.role === 'system')?.content;
     const newSystem = messages.find((m: any) => m.role === 'system')?.content;
-    const systemChanged = JSON.stringify(oldSystem) !== JSON.stringify(newSystem);
+    const oldSystemNorm = stripModelSwitchNotes(oldSystem ?? '');
+    const newSystemNorm = stripModelSwitchNotes(newSystem ?? '');
+    const systemChanged = oldSystemNorm !== newSystemNorm;
     console.log(`[PromptEngine] system check: oldLen=${oldSystem?.length ?? 0}, newLen=${newSystem?.length ?? 0}, changed=${systemChanged}`);
     if (systemChanged) {
+      // Check if it's the same conversation despite system change (chat_id match).
+      // If same conversation, use incremental mode — avoid 78KB full re-injection.
+      const sameChatId = this.isSameConversation(oldMsgs, messages);
+      if (sameChatId) {
+        console.log(`[PromptEngine] SYSTEM CHANGED but same chat_id → incremental (avoid full re-injection)`);
+        const newMsgsList = this.getNewMessages(oldMsgs, messages);
+        const newText = this.formatIncrementalPrompt(newMsgsList);
+        if (newText && !this.isMetadataContent(newText)) {
+          return { text: newText, requireNewChat: false };
+        }
+      }
       console.log(`[PromptEngine] SYSTEM CHANGED → full injection`);
       return { text: this.formatTranscript(messages, tools), requireNewChat: true };
     }

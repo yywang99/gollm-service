@@ -448,29 +448,16 @@ export class SessionManager {
   async startNewChat(): Promise<void> {
     const page = await this.getPage();
 
-    // ─── Save mode before starting new chat ───
-    await this.detectGeminiMode(); // detect before clicking
+    // Dismiss any overlay/backdrop that may block navigation
     await this.dismissOverlays();
 
-    try {
-      const newChatBtn = await page.$('a[href="/app"], button[aria-label*="New"], button[aria-label*="新對話"], button[aria-label*="新建"]');
-      if (newChatBtn) {
-        await newChatBtn.click({ force: true, timeout: 3000 });
-        await page.waitForTimeout(2000);
-      } else {
-        await page.goto("https://gemini.google.com/app", { waitUntil: "domcontentloaded" });
-        await page.waitForTimeout(2000);
-      }
-    } catch (e) {
-      console.log("[SessionManager] Error starting new chat via click: " + e + " - falling back to navigation...");
-      this.setLastError(`startNewChat (fallback nav): ${e}`);
-      await page.goto("https://gemini.google.com/app", { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(2000);
-    }
-    
-    await page.waitForTimeout(1000); // Wait for new chat UI to settle
+    // Direct navigation to /app creates a fresh new chat page.
+    // This is more reliable than clicking the "New chat" button,
+    // and ensures Gemini has no knowledge of previous conversation history.
+    await page.goto("https://gemini.google.com/app", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2000);
 
-    // ─── Apply target mode after new chat ───
+    // Apply target mode (e.g., pro/flash) after fresh page load
     await this.applyTargetMode();
 
     console.log("[SessionManager] Done starting new chat");

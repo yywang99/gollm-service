@@ -109,6 +109,11 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
         finalContent = null;
       } else if (noReply) {
         finalContent = "NO_REPLY";
+      } else if (!finalContent) {
+        // Guard: empty text with no tool calls would cause OpenClaw to error.
+        // Return a safe fallback rather than crashing the client.
+        console.warn("[GoLLM Chat] Empty response text with no tool calls — returning fallback");
+        finalContent = "(No response received. Please try again.)";
       }
 
       const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
