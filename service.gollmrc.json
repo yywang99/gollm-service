@@ -45,5 +45,11 @@
     "pollIntervalMs": 500,
     "stableThreshold": 10,
     "maxRetries": 3
+  },
+  "prompt": {
+    "maxTranscriptLength": 60000,
+    "maxToolsSectionLength": 64000,
+    "maxToolOutputLength": 3000,
+    "enableMediaSendReminder": true
   }
 }

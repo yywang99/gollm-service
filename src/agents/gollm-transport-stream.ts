@@ -14,6 +14,7 @@ import { withMutex } from "../services/request-mutex.js";
 import { DOMDoctor } from "../services/dom-doctor.js";
 import { parseToolCalls, detectHallucination } from "../utils/tool-parser.js";
 import { PromptEngine } from "../services/prompt-engine.js";
+import { initPromptConfig } from "../services/prompt-config.js";
 
 const promptEngine = new PromptEngine();
 
@@ -37,6 +38,7 @@ export interface GollmInput {
   messages: GollmMessage[];
   tools?: any[];
   thinkingLog?: boolean;
+  promptConfig?: Record<string, unknown>;  // passed through to PromptEngine config
 }
 
 export interface GollmOutput {
@@ -289,9 +291,12 @@ export async function executeGollmRPA(
   options: { thinkingLog?: boolean; playwrightConfig?: any } = {}
 ): Promise<GollmOutput> {
   return await withMutex("gollm-rpa", async () => {
-    const { messages, tools } = input;
+    const { messages, tools, promptConfig } = input;
     const { thinkingLog = true, playwrightConfig = {} } = options;
     const log = (msg: string) => { if (thinkingLog) console.log(`[GoLLM RPA] ${msg}`); };
+
+    // Bootstrap prompt limits from config (idempotent — safe to call every request)
+    initPromptConfig(promptConfig ?? null);
 
     const session = getSessionManager({
       headless: playwrightConfig?.headless ?? process.env.GOLLM_HEADLESS === "true",

@@ -54,6 +54,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
     const modelId = request.body?.model || "gollm-v9";
     const thinkingLog = opts.config?.gemini?.thinkingLog !== false;
     const playwrightConfig = opts.config?.playwright || {};
+    const promptConfig = opts.config?.prompt ?? null;
 
     // 2. Dynamic Model Selection
     // Supports: golem/gemini-pro, golem/gemini-flash, golem/gemini-flash-lite, gemini-think, etc.
@@ -87,7 +88,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
 
       // 3. RPA Execution
       const result = await executeGollmRPA(
-        { messages: filteredMessages as any, tools, thinkingLog },
+        { messages: filteredMessages as any, tools, thinkingLog, promptConfig },
         { thinkingLog, playwrightConfig }
       );
 

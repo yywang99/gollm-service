@@ -20,6 +20,7 @@ export interface HallucinationPatterns {
  */
 export const DEFAULT_PATTERNS: HallucinationPatterns = {
   completionClaims: [
+    // ── [File / System Operations] ──────────────────────────────────────────────
     // Chinese
     /已處理好了?/i,
     /已修改好了?/i,
@@ -32,7 +33,6 @@ export const DEFAULT_PATTERNS: HallucinationPatterns = {
     /完成好了/i,
     /處理好了/i,
     /修改好了/i,
-    /做好了/i,
     /搞定好了?/i,
     /都好了/i,
     // English
@@ -45,6 +45,32 @@ export const DEFAULT_PATTERNS: HallucinationPatterns = {
     /I (have )?finished (the )?(task|job|modification)/i,
     /The file (has been|was) (modified|created|deleted|updated)/i,
     /I (just )?(modified|created|deleted|updated) the file/i,
+
+    // ── [Messaging / Media Send Operations] ───────────────────────────────────
+    // Chinese — "I sent the photo/message" without tool call
+    /已發送(?:好了|完)?/i,
+    /圖片已發送/i,
+    /照片已傳送/i,
+    /訊息已發送/i,
+    /已幫你發送/i,
+    /已幫您發送/i,
+    /已傳送完畢/i,
+    /已經發送圖片/i,
+    /已經傳送照片/i,
+    /已經發送完畢/i,
+    /發送成功/i,
+    /傳送成功/i,
+    /已把圖片發過去/i,
+    /已把照片傳過去/i,
+    // English — "sent the photo/message/image" without tool call
+    /I have sent (the )?(photo|image|message|media|file|picture)/i,
+    /I've sent (the )?(photo|image|message|media|file|picture)/i,
+    /The (photo|image|message|media|file|picture) (has been|was) sent/i,
+    /(photo|image|message|media|file|picture) sent successfully/i,
+    /Sent (the )?(photo|image|message|media|file|picture)/i,
+    /I('ve| have) (just )?uploaded and sent/i,
+    /Photo has been (delivered|sent|uploaded)/i,
+    /I('ve| have) (just )?shared (the )?(photo|image|file)/i,
   ],
 
   fileModificationIntent: [

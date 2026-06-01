@@ -1,490 +1,299 @@
-# GoLLM Service 規格書
+# GoLLM Service — SPEC.md
 
-> **用 Playwright RPA + Gemini Web UI 包裝成獨立 LLM Microservice**
->
-> 定位類似 Ollama，但用 Gemini Web UI（已登入的瀏覽器）取代本地模型。
+> **Specs are the contract.** If an AI agent or developer reads one document to understand this service, it should be this one.
 
 ---
 
-## 1. 願景與目標
+## 1. 概述
 
-### 核心目標
+**GoLLM Service** 是一個將 Gemini Web UI（`gemini.google.com`）包裝成 OpenAI Compatible API 的本地代理服務。它透過 Playwright RPA 控制真實瀏覽器執行 Prompt 注入，而非使用官方 Gemini API。
 
-把 `gollm-transport-stream.ts`（取自 project-golem 的 RPA 邏輯）封裝成一個**獨立的 HTTP Microservice**，任何 OpenAI-compatible Client 都可以透過標準 API 呼叫：
+**為什麼用 RPA 而非 API？**
+- 規避 Gemini API 的 Rate Limit 與配額限制
+- 網頁端有更多功能（如深度搜尋、多模態上傳）
+- 可使用 Gemini Pro/Flash 的更強模型
 
-- ✅ 用 **Google Gemini App** 的完整能力（長上下文、Pro 訂閱功能）當 LLM 大腦
-- ✅ 與其他 LLM Provider（OpenAI、Anthropic、MiniMax）同時並存、自由切換
-- ✅ 可被任何 OpenAI-compatible Client 呼叫（OpenClaw、Hermes、curl、Python 指令稿）
-- ✅ **gollm-service 獨立部署，不受 OpenClaw 更新影響**
-
-### 非目標
-
-- ❌ 不做 standalone Telegram bridge（那是 Project GoLLM 的用途）
-- ❌ 不支援高並發多 session（Browser RPA 的本質限制）
-- ❌ 不做 Tool Use / Function Calling 轉譯（純 LLM Provider）
-- ❌ 不是 OpenClaw Plugin，而是獨立 HTTP Service
+**限制：**
+- 單一 Browser Session，無併發支援
+- 需要稳定的 Google 帳號登入狀態
 
 ---
 
-## 2. 產品定位
+## 2. API Contract
 
-### 定位：獨立 Microservice（類似 Ollama）
+### 2.1 Request — `POST /v1/chat/completions`
 
-```
-┌───────────────────────────────────────────────────────┐
-│              gollm-service (port 3001)                 │
-│  ┌──────────────┐  ┌────────────────┐  ┌───────────┐  │
-│  │  HTTP API    │  │  Session       │  │   DOM     │  │
-│  │  /v1/chat    │──│  Manager       │──│   Doctor  │  │
-│  └──────────────┘  └────────────────┘  └───────────┘  │
-│        │                  │                   │        │
-│        ▼                  ▼                   ▼        │
-│  ┌──────────────┐  ┌────────────────┐  ┌───────────┐  │
-│  │  Transport   │  │  Playwright    │  │  Selectors│  │
-│  │  Streamer    │  │  Chromium      │  │  Pool     │  │
-│  └──────────────┘  └────────────────┘  └───────────┘  │
-└───────────────────────────────────────────────────────┘
-        │ HTTP (OpenAI-compatible)
-        ▼
-┌───────────────────┐     ┌───────────────────┐
-│     OpenClaw       │     │     Hermes         │
-│  (當其中一個 Model) │     │  (當其中一個 Model) │
-└───────────────────┘     └───────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────────┐
-│           Gemini Web UI（已登入的瀏覽器）               │
-└─────────────────────────────────────────────────────┘
-```
-
-### 適用情境
-
-| 情境 | 建議 Provider |
-|------|--------------|
-| 日常對話、寫作、翻譯 | MiniMax / OpenAI / Anthropic API |
-| 需要 Gemini Pro 長上下文（>128K）| **gollm Gemini Web** |
-| 需要 Gemini 獨有工具（Google Workspace）| **gollm Gemini Web** |
-| 本地、私密、不走網路的任務 | Ollama / LM Studio |
-| 程式碼生成、專業分析 | DeepSeek Coder / Claude |
-
----
-
-## 3. 功能規格
-
-### 3.1 Transport Provider 核心
-
-**檔案：** `src/agents/gollm-transport-stream.ts`
-
-**職責：**
-- 管理 Playwright Chromium Browser Context（單例）
-- 將 `messages` 陣列轉換為 Gemini Web UI 可理解的形式
-- 執行 輸入 → 發送 → 輪詢回應 的 RPA 流程
-- 自動偵測並切換 Gemini 模式（Think / Pro / Fast）
-- 過濾不必要的 metadata，確保乾淨的 prompt
-
-**事件流程：**
-
-```
-User Message
-    ↓
-getLatestUserMessage() → 取出 prompt
-    ↓
-[Event: thinking_start]
-    ↓ RPA 流程
-Launch / Get Browser Context
-    ↓
-navigateToGemini() → 確認在 Gemini 頁面
-    ↓
-startNewChat() / setGeminiMode() → 點擊 New Chat + 選模式
-    ↓
-typeInput() → DOM injection + Keyboard Events（pool → DOMDoctor → throw）
-    ↓
-clickSend() → Enter + 按鈕備援
-    ↓
-waitForNewStableResponse() → DOM 輪詢直到穩定
-    ↓
-[Event: text_start] → text block #1
-[Event: text_delta] → 回覆文字
-[Event: text_end]
-    ↓
-[Event: done]
-```
-
-### 3.2 DOM Doctor（Selector 修復）
-
-**檔案：** `src/services/dom-doctor.ts`（移植自 `project-golem/src/services/DOMDoctor.js`）
-
-**職責：**
-- 維護 CSS Selector 池（input / send / response）
-- 當 Selector 失效時，用 AI（Gemini）診斷並修復（可選，需要 GEMINI_API_KEY）
-- 學習 Gemini Web UI 的 DOM 結構變化
-
-**Selector 池（來自 `src/utils/selectors.ts`）：**
-
-```typescript
-const SELECTORS = {
-  input: [
-    ".ql-editor",           // Quill editor (2024+ Gemini)
-    ".ProseMirror",         // ProseMirror
-    "rich-textarea",        // custom element
-    'div[role="textbox"][contenteditable="true"]',
-    'div[contenteditable="true"]',
-    "textarea",
-  ],
-  send: [
-    'button[aria-label*="Send"]',
-    'button[aria-label*="傳送"]',
-    'button[aria-label*="發送"]',
-  ],
-  response: [
-    "model-response .model-response-text",
-    "model-response",
-    "message-content",
-    ".response-container-content",
-  ]
-}
-```
-
-### 3.3 設定面板
-
-**檔案：** `service.gollmrc.json`（唯一的設定檔，無需環境變數）
-
-| 設定 key | 說明 | 預設值 |
-|----------|------|--------|
-| `server.port` | HTTP Server Port | `3001` |
-| `server.host` | HTTP Server Host | `127.0.0.1` |
-| `playwright.headless` | 是否 headless 啟動瀏覽器 | `false` |
-| `playwright.userDataDir` | Chromium Profile 路徑 | `~/.openclaw/gollm-playwright-profile` |
-| `playwright.stealth` | 啟用 Stealth 模式 | `true` |
-| `gemini.url` | Gemini 目標網址 | `https://gemini.google.com/app` |
-| `gemini.thinkingLog` | 輸出 thinking progress 到 console | `true` |
-| `gemini.autoLogin` | 自動完成 Google 登入 | `true` |
-
-### 3.4 Gemini 模式追蹤（Target Mode）
-
-gollm-service 支援自動偵測並切換 Gemini 的三種模式：
-
-| 模式 | 說明 | API 模型名稱 |
-|------|------|-------------|
-| `think` | 深度思考模式（Think / 思考） | `gemini-think` |
-| `pro` | Pro 標準模式 | `gemini-pro` |
-| `fast` | 快捷模式（Flash） | `gemini-fast` |
-
-**運作流程：**
-1. `chat.ts` 從 model ID（`gemini-think` / `gemini-pro` / `gemini-fast`）偵測目標模式
-2. `SessionManager.setTargetMode()` 記錄目標模式
-3. 每次 navigate 或 startNewChat 後，自動點擊對應的模式按鈕
-4. 確保 Gemini 回覆時使用正確的模式
-
-### 3.5 Session 管理
-
-**檔案：** `src/services/session-manager.ts`
-
-**職責：**
-- 維護一個 Playwright PersistentContext 單例
-- 追蹤 Browser 狀態（已登入 / 需要驗證 / 崩潰重啟）
-- 處理 Session 過期時的 re-auth 流程
-- 支援 Target Mode 追蹤與自動恢復
-- 自動移除 Angular CDK overlay backdrop（解決點擊被阻擋的問題）
-- 提供 `mergeOptions()` 讓後續設定載入能更新既有 singleton
-
-**CDK Overlay 問題說明：**
-Gemini Web UI 使用 Angular CDK，`.cdk-overlay-backdrop` 會攔截所有點擊事件。SessionManager 在所有點擊操作前會先移除這些 overlay 元素，確保 DOM 操作能正常到達目標按鈕。
-
-### 3.6 尚未實作的功能（未來規劃）
-
-以下功能在 SPEC 中有規劃，但目前尚未實作：
-
-- 多帳號 / 多 Context 支援（Browser Pooling）
-- Web Dashboard 控制面板
-- Token 消耗 / 使用量估算
-- 與 Ollama / LM Studio 的自動 fallback 策略
-- Selector 池自動更新（Gemini UI 改版時）
-
----
-
-## 4. 技術架構
-
-### 4.1 目錄結構
-
-```
-gollm-service/
-├── src/
-│   ├── server/
-│   │   └── http-server.ts          # HTTP Server (Fastify)
-│   ├── agents/
-│   │   └── gollm-transport-stream.ts  # Core RPA → Transport logic
-│   ├── services/
-│   │   ├── dom-doctor.ts           # DOM Selector AI 修復
-│   │   ├── session-manager.ts     # Playwright Browser 生命週期
-│   │   └── response-extractor.ts  # DOM 回應輪詢邏輯
-│   ├── routes/
-│   │   ├── chat.ts                 # /v1/chat (OpenAI-compatible)
-│   │   ├── models.ts               # /v1/models
-│   │   └── health.ts               # /health
-│   └── utils/
-│       ├── selectors.ts            # CSS Selector 池
-│       └── timings.ts              # Polling intervals, timeouts
-├── service.gollmrc.json            # 設定檔（無需環境變數）
-├── package.json
-├── tsconfig.json
-├── SPEC.md
-└── README.md
-```
-
-### 4.2 HTTP API（OpenAI-compatible）
-
-```
-POST /v1/chat/completions
-Authorization: Bearer ***（任意值，gollm-service 不驗證）
-Content-Type: application/json
-
+```json
 {
-  "model": "gemini-think",
+  "model": "flash",           // flash | flash-lite | pro（可混合大小寫）
   "messages": [
-    {"role": "system", "content": "你是一個專業助理"},
-    {"role": "user", "content": "台灣最高的山是什麼？"}
+    { "role": "system", "content": "..." },
+    { "role": "user", "content": "..." }
   ],
-  "stream": false
+  "tools": [...],             // OpenAI tool definitions（可選）
+  "stream": false              // 目前固定不支援 streaming
 }
 ```
 
-**其他端點：**
-- `GET /v1/models` — 列出可用模型（gemini-fast / gemini-think / gemini-pro）
-- `GET /health` — 健康檢查（回傳 session 狀態與 browser 狀態）
-
-### 4.3 依賴
+### 2.2 Response — `POST /v1/chat/completions`
 
 ```json
 {
-  "dependencies": {
-    "playwright": "^1.40.0",
-    "fastify": "^4.0.0",
-    "@fastify/cors": "^8.0.0",
-    "dotenv": "^16.0.0",
-    "pino-pretty": "^13.1.3",
-    "@google/generative-ai": "^0.24.1"
+  "id": "gollm-1749991234567",
+  "object": "chat.completion",
+  "model": "flash",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "文字回覆，或 null（當為 pure tool call 時）",
+      "tool_calls": [...]        // 當有工具呼叫時
+    },
+    "finish_reason": "stop"      // stop | tool_calls
+  }],
+  "usage": { "total_tokens": 0 },
+  // ── Custom fields（給 OpenClaw / Hermes 整合用）───────────────
+  "_gollm_unconfirmed_action": true,   // Hallucination Guard 觸發過（可選）
+  "_gollm_hallucination_warn": true    // 同上，附加在 choice 內（可選）
+}
+```
+
+**Custom fields 說明：**
+- `_gollm_unconfirmed_action: true` — 表示模型在這次回覆中聲稱執行了某動作但未成功輸出 tool call，Hallucination Guard 已嘗試修正但仍失敗。Agent 可以拿這個欄位做額外的使用者提示或降級處理。
+- 這個欄位**不影響** HTTP status code（200），純粹是 response body 內的metadata。
+
+---
+
+## 3. Tool Call 格式（重要）
+
+### 3.1 輸入格式（gollm-service → Gemini）
+
+Tool definitions 會以 JSON 形式注入到 Prompt 中，Gemini 需要輸出以下兩種格式之一：
+
+**格式 A — `<tool_call>` JSON block（主要）：**
+```
+<tool_call>
+{"name": "web_fetch", "arguments": {"url": "https://..."}}
+</tool_call>
+```
+
+**格式 B — `<call:domain:method>` XML 標籤（向後兼容 Hermes）：**
+```
+<call:default_api:run_shell_command>{"command": "ls -la"}</call>
+```
+
+### 3.2 輸出清洗（gollm-service → Client）
+
+回覆給 client 前，`sanitizeWebRpaOutput()` 會：
+1. **剝離 Markdown code block wrappers** — ```json ... ``` → 內部內容
+2. **還原 HTML 實體** — `<` → `<`，`>` → `>`，`&` → `&`
+
+這是因為 Gemini Web UI 會自動將 `<` 轉換為 `<`，所以解析時必須還原。
+
+### 3.3 媒體發送提醒（Media Send Reminder）
+
+當 `config.prompt.enableMediaSendReminder: true` 時，在工具清單下方會自動注入：
+
+```
+[Critical: How to Send Images/Media]
+When sending images or files, you MUST use the MEDIA: prefix with a LOCAL ABSOLUTE PATH.
+Example correct: In a send_message tool call, use "MEDIA:/home/yywang/.hermes/image_cache/photo.jpg"
+NEVER claim "photo sent" or "image delivered" without actually outputting a valid tool_call.
+NEVER use an external HTTP URL (e.g. Bing URL) as the media path — Telegram cannot fetch it.
+```
+
+這是因為 Gemini 模型常見的「聲稱已發送圖片」幻覺，實際上根本沒有輸出 tool call。
+
+---
+
+## 4. Hallucination Guard（幻覺防護）
+
+### 4.1 偵測邏輯
+
+`detectHallucination()` 在每次 Gemini 回覆後執行，檢查三種模式：
+
+| 類型 | 模式 | 觸發條件 |
+|------|------|---------|
+| **Refusal** | 拒絕執行指令（「我是 AI 無法...」） | 出現拒絕關鍵詞 |
+| **Completion Claim** | 聲稱完成但沒有 tool call | 有「已發送」「已修改」「已完成」等關鍵詞，且無 tool call 輸出 |
+| **File Intent + Short** | 意圖修改檔案但回覆極短 | 有檔案操作意圖 + 回覆 < 200 字元 |
+
+### 4.2 修正流程
+
+```
+Gemini 回覆
+    │
+    ▼
+detectHallucination()
+    │
+    ├── 無幻覺 → 回傳給 client
+    │
+    └── 有幻覺 → injectSystemObservation() 注入強制定義：
+                "⚠️ HALLUCINATION DETECTED
+                 You MUST use tool_call format.
+                 Do NOT claim completion without tool call."
+                → clickSend() → Gemini 重試
+                   │
+                   ▼
+              waitForStableResponse()
+                   │
+                   ▼
+              validateWithHallucinationGuard()（遞迴，maxRetries=2）
+                   │
+                   ├── 成功消除幻覺 → 回傳修正後回覆
+                   └── 仍失敗（max retries）→ 回傳並附加 _gollm_unconfirmed_action: true
+```
+
+### 4.3 通訊幻覺偵測模式
+
+以下是專門針對「聲稱發送訊息/圖片」的模式（`completionClaims` 中的 `messaging` 子集）：
+
+**中文：** `已發送好了`、`圖片已發送`、`照片已傳送`、`訊息已發送`、`發送成功`、`已把圖片發過去` 等。
+
+**英文：** `I have sent the photo`、`photo sent successfully`、`I've shared the image` 等。
+
+當模型說出這些話卻**沒有**輸出 tool call 時，Hallucination Guard 會觸發修正。
+
+---
+
+## 5. Prompt 策略（Incremental vs Full）
+
+### 5.1 決策邏輯
+
+`determinePromptStrategy()` 每次請求都會評估：
+
+```
+isSameConversation(oldMsgs, newMsgs)?
+    ├── YES → 增量模式（只送新訊息，理論上最快）
+    │          但若新訊息全是 metadata 無實際內容 → 退為全量
+    └── NO  → 全量模式（全新對話，或 Context Shift）
+               └── requireNewChat: true（點擊「New Chat」避免混淆）
+```
+
+**isSameConversation 判定：**
+1. **主要**：從 system message 的 metadata JSON 中取 `chat_id`，比對雙方是否相同
+2. **Fallback**：比較 message role sequence（role 相同則視為同一對話）
+
+### 5.2 System Prompt 變更檢查
+
+即使 `chat_id` 不變，只要 system message 有實質變更（排除 `[Note: model was just switched...]` 這類瞬態註記），就會觸發 `requireNewChat: true`，確保新指示被正確套用。
+
+### 5.3 Metadata 剝離
+
+`cleanContent()` 會移除：
+- OpenClaw 格式：`Conversation info (untrusted metadata):\n\`\`\`json\n{...}\n\`\`\``
+- Hermes 格式：`[Metadata]\n...`
+- 單行 header：`Conversation context (untrusted ...): ...`
+
+避免這些 metadata 進入 Gemini 污染 Prompt。
+
+---
+
+## 6. 設定檔完整參考 (`service.gollmrc.json`)
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3001
   },
-  "devDependencies": {
-    "typescript": "^5.0.0",
-    "tsx": "^4.0.0",
-    "vitest": "^1.0.0",
-    "@types/node": "^20.0.0"
+  "playwright": {
+    "browser": "chromium",
+    "headless": false,
+    "userDataDir": "gollm-playwright-profile",
+    "stealth": true
+  },
+  "gemini": {
+    "url": "https://gemini.google.com/app",
+    "thinkingLog": true,
+    "autoLogin": true
+  },
+  "selectors": {
+    "input":   [".ql-editor", ".ProseMirror", "div[contenteditable='true']"],
+    "send":    ["button[aria-label*='Send']", "button[aria-label*='傳送']"],
+    "response":["model-response .model-response-text", "message-content"]
+  },
+  "limits": {
+    "maxResponseTimeMs": 300000,
+    "pollIntervalMs": 500,
+    "stableThreshold": 10,
+    "maxRetries": 3
+  },
+  "prompt": {
+    "maxTranscriptLength":    60000,
+    "maxToolsSectionLength":   64000,
+    "maxToolOutputLength":     3000,
+    "enableMediaSendReminder": true
   }
 }
 ```
 
-### 4.4 與 Project GoLLM 的關係
-
-```
-Project GoLLM（完整 AI Agent 系統）
-├── GolemBrain.js         ← 獨立 AI Agent 系統
-├── PageInteractor.js     ← Playwright DOM 操作
-├── DOMDoctor.js          ← Selector 修復
-└── 自己的記憶、技能、Bridge 系統
-
-gollm-service（本專案）
-├── HTTP Server (Fastify)        ← 新增：獨立 HTTP API
-├── gollm-transport-stream.ts    ← 只取 PageInteractor 核心
-├── dom-doctor.ts                ← 只取 DOMDoctor 的 Selector 修復
-└── session-manager.ts           ← 新增：Playwright Context 單例管理
-```
-
-**關鍵差異：**
-- Project GoLLM 是完整的 AI Agent 系統（有自己的記憶、技能、橋接系統）
-- 本專案只是**把 Gemini Web 當成一顆 LLM**，以 OpenAI-compatible API 輸出
-- 不需要 GoLLM 的 Skill 系統、Multi-Agent 系統（那些是 OpenClaw 的職責）
-
-### 4.5 與 Ollama 的類比
-
-| 層面 | Ollama | gollm-service |
-|------|--------|---------------|
-| 底層模型 | 本地 LLM（Llama, Mistral） | Gemini Web UI（雲端） |
-| HTTP API | `localhost:11434` | `localhost:3001` |
-| API 格式 | OpenAI-compatible | OpenAI-compatible |
-| 依賴 | GPU/CPU | 瀏覽器 + 網路 |
-| 更新頻率 | 模型下載 | Selector 維護 |
-
-**核心價值：等同於 Ollama，但用 Google Gemini Pro 取代本地模型**
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `server.port` | number | HTTP 監聽埠，預設 3001 |
+| `playwright.headless` | boolean | `false` 時可觀察瀏覽器，適合首次登入 |
+| `playwright.userDataDir` | string | Chromium profile 目錄（影響登入狀態持久化）|
+| `gemini.thinkingLog` | boolean | 是否在 console 輸出 Thinking log |
+| `selectors.*` | string[] | DOM 選擇器池，按順序嘗試找元素 |
+| `limits.maxResponseTimeMs` | number | Gemini 回覆最大等待時間（300s）|
+| `prompt.maxTranscriptLength` | number | 對話歷史總長上限（chars） |
+| `prompt.maxToolsSectionLength` | number | 工具清單總長上限（chars） |
+| `prompt.maxToolOutputLength` | number | 單次工具輸出截斷門檻（chars） |
+| `prompt.enableMediaSendReminder` | boolean | 是否注入媒體發送強制規範 |
 
 ---
 
-## 5. 開發里程碑
+## 7. 錯誤碼與狀態對照
 
-### Phase 0：奠基 ✅
+### HTTP Status Codes
 
-- [x] 建立 Service 基本結構
-- [x] 實作 Fastify HTTP Server（`/v1/chat`, `/v1/models`, `/health`）
-- [x] 移植 `gollm-transport-stream.ts`
-- [x] 移植 `dom-doctor.ts`
-- [x] 解決多行文字與特殊符號注入造成的 SyntaxError 崩潰問題
-
-### Phase 1：核心功能 ✅
-
-- [x] Playwright Browser 單例管理（Session Manager）
-- [x] Selector 自動修復流程整合（DOMDoctor）
-- [x] 實作 Request Mutex 處理單一 Browser 實例的併發防護
-- [x] 回應輪詢穩定性強化（偵測 Stop 按鈕避免提早擷取）
-- [x] 無狀態 API 到有狀態網頁的映射（Transcript Snapshotting / Context Sync）
-- [x] 實作 `/v1/models` 正確回傳三個模型（gemini-fast / gemini-think / gemini-pro）
-
-### Phase 2：穩定化 ✅
-
-- [x] 處理 Google 登入 session 過期 re-auth 流程
-- [x] DOM Pruning 防止長對話記憶體洩漏（Memory Leak）
-- [x] 崩潰恢復（Crash Recovery）與事件監聽
-- [x] Gemini 模式偵測與追蹤（Think / Pro / Fast）
-- [x] SessionManager `mergeOptions()` 讓 gollmrc.json 設定能動態更新
-- [x] Angular CDK overlay backdrop 移除，解決點擊被阻擋的問題
-- [x] Health endpoint 改為真實查詢 session 狀態與瀏覽器回應能力
-
-### Phase 3：強化（規劃中）
-
-- [ ] 多帳號 / 多 Context 支援（Browser Pooling）
-- [ ] Web Dashboard 控制面板
-- [ ] Token 消耗 / 使用量估算
-- [ ] 與 Ollama / LM Studio 的自動 fallback 策略
-- [ ] Selector 池自動更新（Gemini UI 改版時）
-- [ ] `~` 路徑自動展開（目前 `userDataDir` 中的 `~` 不會被 Node.js 展開）
-
-### Phase 4：幻覺防制 ✅（實作中）
-
-- [x] Hallucination Guard 機制（攔截「已處理」類幻覺回覆）
-- [x] System Observation 反饋注入（讓 Gemini 自我修正）
-- [x] 嚴格的 Action 格式約束（強化 Prompt 提示）
-- [x] 回應驗證層（Response Validation Layer）
-- [x] Retry Feedback Loop（最多 2 次重試）
-
----
-
-## 6. 風險與對應
-
-| 風險 | 機率 | 影響 | 對應 |
-|------|------|------|------|
-| Google 改 UI 導致 Selector 失效 | 高 | 中 | DOM Doctor AI 修復 + Selector 池 fallback |
-| 單一 Browser Context 無法高並發 | 高 | 低 | 這是已知限制，不追求這個場景 |
-| Playwright 版本與 Chromium 相容問題 | 中 | 中 | 用 `@playwright/test` 的版本固定機制 |
-| Google 封鎖自動化操作 | 低 | 高 | 降低操作頻率、用 Stealth 模式 |
-| Session cookie 過期 | 中 | 中 | Session Manager 自動偵測 + 提示 re-login |
-| `userDataDir` 路徑 `~` 未展開 | 中 | 中 | 導致瀏覽器实例使用錯誤的 Profile 目錄 |
-
----
-
-## 7. 驗收標準
-
-### 功能驗收
-
-- [x] 啟動 gollm-service（`npm start`）後，可以透過 curl 與 Gemini Web 對話
-- [x] Selector 失效時，DOM Doctor 會嘗試 AI 修復（可選功能，需 GEMINI_API_KEY）
-- [x] 與 OpenAI / Anthropic Provider 同時存在不衝突
-- [x] `/v1/models` 正確回傳三個模型
-- [x] `/health` 正確反映 session 狀態與瀏覽器回應能力
-- [ ] Session 過期後有合理的錯誤訊息與復原指引
-- [ ] Headless 模式下在 Server/VPS 可正常運作
-
-### 穩定度驗收
-
-- [ ] 連續 50 回合對話不發生 DOM 洩漏
-- [ ] CDK overlay 移除穩定，點擊操作不再被阻擋
-
-### 幻覺防制驗收
-
-- [x] 當 Gemini 回覆「我已經修改了檔案」但無 action 標籤時，系統自動注入 System Observation
-- [x] 重試後仍無 action，回覆攔截並附加 `unconfirmed_action` flag
-- [x] 不影響正常的純文字對話流程（不可過度警覺）
-- [x] 重試次數上限 2 次，防止無限循環
-- [x] 可以透過 `service.gollmrc.json` 設定 `hallucinationGuard.enabled` 開關
-
----
-
-## 8. 幻覺防制機制（Hallucination Guard）
-
-> **問題定義**：透過 gollm-service 的 Gemini Web App，模型常見的幻覺是聲稱「我已經修改了檔案」、「已處理完成」，但實際上並未執行任何工具，直接將回覆傳給 Hermes/OpenClaw，導致 Agent 誤以為任務已完成。
-
-### 8.1 問題根因
-
-| 層次 | 根因 |
+| Code | 意義 |
 |------|------|
-| **第一層：Chatbot Bias** | Gemini 網頁版被訓練成「貼心的對話助理」，看到「修改檔案」類任務會直接說「已處理好」，而不知道自己被關在 RPA 殼裡 |
-| **第二層：Tool Call 缺失** | gollm-service 靠 Prompt 要求 Gemini 輸出格式，但上下文過長或任務複雜時，Gemini 會漏看格式要求，直接輸出純文字 |
-| **第三層：無驗證迴路** | `executeGollmRPA()` 收到回覆後，若 `parseToolCalls()` 為空，直接當成「普通文字回覆」傳回，沒有任何重新引導機制 |
+| 200 | 成功（含 hallucination warning） |
+| 400 | 請求格式錯誤（如缺少 `messages`）|
+| 401 | Google Session 失效（`needs_reauth`）|
+| 500 | Internal error（如 Playwright 崩潰、Timeout）|
 
-### 8.2 解決方案：四層防衛
+### `session` field（`/health` 或 error payload 中）
 
-#### 第一層｜Prompt 強約束（輸入時）
-在 `formatTranscript()` 中加入 STRICT SYSTEM REMINDER：
+| 值 | 意義 | 處理方式 |
+|----|------|---------|
+| `new` | 首次啟動，尚未登入 | 設 `headless: false` 手動登入 |
+| `logged_in` | 正常 | — |
+| `needs_reauth` | Session 過期 | 需重新登入 Google 帳號 |
+| `crashed` | 瀏覽器崩潰 | `pkill -9 -f gollm-service && start` |
 
-```
-[STRICT SYSTEM REMINDER - NON-NEGOTIABLE]
-You are running inside a Playwright RPA shell. You do NOT have direct filesystem access.
-- If user asks you to modify/create/delete files or run shell commands, you MUST output the appropriate action tags.
-- If you claim "I have already done X" without outputting action tags, you are HALLUCINATING.
-- Every file modification must be requested via action tags. You cannot fabricate completion.
-```
+### `browser` field
 
-#### 第二層｜回應驗證（收到回覆時）
-在 `executeGollmRPA()` 收到 `waitForStableResponse()` 的回覆後，立刻進行幻覺偵測：
-
-```typescript
-// 偽代碼
-const result = await waitForStableResponse(page, baseline);
-const toolCalls = parseToolCalls(result.text);
-const hallucination = detectHallucination(result.text, toolCalls);
-
-if (hallucination.isHallucination) {
-  await injectSystemObservation(page, hallucination.reason);
-  // 重試（最多 2 次）
-}
-```
-
-#### 第三層｜System Observation 注入（Feedback Loop）
-當偵測到幻覺時，向 Gemini 注入：
-
-```
-[System Observation] ⚠️ HALLUCINATION DETECTED
-
-Your previous response claimed completion without outputting action tags.
-You do NOT have filesystem access. You MUST output your intended action in the correct format.
-```
-
-#### 第四層｜熔斷機制
-重試 2 次後仍無有效 action，回傳時附加 metadata flag：
-```json
-{
-  "content": "我已經修改了檔案...",
-  "_gollm_hallucination_warn": true,
-  "_gollm_unconfirmed_action": true
-}
-```
-
-### 8.3 實作變更
-
-| 檔案 | 變更內容 |
-|------|---------|
-| `src/utils/hallucination-patterns.ts` | **新增**：幻覺關鍵字 pattern 集合 |
-| `src/utils/tool-parser.ts` | 新增 `detectHallucination()` 函式 |
-| `src/agents/gollm-transport-stream.ts` | 加入驗證 → 重試迴路 + STRICT SYSTEM REMINDER |
-| `src/routes/chat.ts` | 附加 `_gollm_hallucination_warn` metadata |
+| 值 | 意義 |
+|----|------|
+| `responsive` | 瀏覽器正常運行 |
+| `unresponsive` | 瀏覽器無響應（可能需要重啟）|
 
 ---
 
-## 9. 設定檔新增選項（service.gollmrc.json）
+## 8. 設計決策記錄（Design Decisions）
 
-```json
-{
-  "hallucinationGuard": {
-    "enabled": true,
-    "maxRetries": 2,
-    "patterns": [
-      "已處理", "已修改", "已完成", "已經做好",
-      "I have already modified", "I have already created", "Done!"
-    ]
-  }
-}
-```
+### Q: 為什麼用 `<tool_call>` JSON block 而非 function calling？
+**A:** Gemini Web UI 本身沒有原生 function calling，模型輸出的是自由格式文字。我們用 `<tool_call>` XML/JSON 標籤將工具呼叫語義化，再從回覆文字中用正則表達式解析出來。這是 Web UI 的限制，也是為什麼需要 `sanitizeWebRpaOutput()`。
+
+### Q: 為什麼不直接用 Gemini API？
+**A:** API 有嚴格的 Rate Limit（如 15 req/min），且無法使用 Gemini Pro 等高階模型。RPA 方式能繞過這些限制，代價是犧牲了併發能力和穩定性。
+
+### Q: Hallucination Guard 的 maxRetries = 2 是怎麼訂出來的？
+**A:** 經驗值。測試中發現 Gemini 通常在第一次 self-correction 就能修正；第二次 retry 的邊際效益已經很低。設成 3 以上會明顯拖慢回應速度且效果有限。
+
+### Q: 為什麼工具清單截斷是從頭遍歷？
+**A:** 因為 OpenAI tool definitions 中，越前面的工具被截掉的機會越大。從頭遍歷意味著高優先級工具（在陣列前面）更可能被保留。如果需要更智能的優先級排序，可以在 `includedTools` 收集時加入 priority score。
 
 ---
 
-_規格書版本：v0.3.0_
-_更新日期：2026-05-17_
-_適用版本：gollm-service v0.3.0_
+## 9. 安全性考量
+
+- **Session Cookie**：存放在 `playwright.userDataDir`，應設定適當的檔案權限（建議 `chmod 700`）。
+- **API Key**：目前 `apiKey: "not-required"`，但若未來要加強安全，可替換為固定密鑰並在 `Authorization: Bearer <key>` header 驗證。
+- **Config 中的 Secret**：如果 `service.gollmrc.json` 包含任何敏感資訊，不要 commit 到 Git（已加入 `.gitignore`）。
+
+---
+
+*Last updated: 2026-06-01*
