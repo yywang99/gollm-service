@@ -15,16 +15,35 @@ Gemini 網頁端（`gemini.google.com`）本身沒有這個限制——起碼在
 ## 核心思路：不要 SDK，只要瀏覽器
 
 ```
-Client (OpenClaw/Hermes)
-    │  POST /v1/chat/completions
-    ▼
-gollm-service (Fastify + Playwright)
-    │
-    ├── PromptEngine ──── 裁剪tools、歷史、注入格式規範
-    │
-    └── SessionManager ── 控制 Chromium，注入Prompt，輪詢回覆
-         │
-         └── Gemini Web UI (gemini.google.com)
+┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│ OpenClaw     │     │  gollm-service   │     │ Gemini Web UI   │
+│ (多 Agent)   │────▶│  (port 3001)     │────▶│ gemini.google   │
+│ Hermes / 小嵐│     │  Fastify +       │     │ .com (登入)     │
+└──────────────┘     │  Playwright RPA  │     └─────────────────┘
+                     └──────────────────┘
+                              │
+                    ┌─────────┴──────────┐
+                    ▼                    ▼
+             PromptEngine          SessionManager
+             - 裁剪 tools           - 控制 Chromium
+             - 裁剪對話歷史        - 注入 Prompt
+             - 注入格式規範        - 輪詢回覆
+             - Hallucination Guard
+```
+
+**典型使用情境：**
+
+```
+使用者 → 小嵐（OpenClaw + gollm-service）
+              │
+              ├── 第1步：gollm-service 接收對話請求
+              ├── 第2步：PromptEngine 裁剪工具清單 + 對話歷史
+              ├── 第3步：SessionManager 將 Prompt 注入 Gemini 網頁
+              ├── 第4步：輪詢等待 Gemini 回覆
+              ├── 第5步：Hallucination Guard 檢查是否有幻覺
+              └── 第6步：回傳 OpenAI 格式回覆给小嵐
+
+結果：小嵐可以穩定使用 Gemini Pro/Flash，绕過 API Rate Limit。
 ```
 
 gollm-service 的本質是一個**瀏覽器自動化中介層**。它不做任何 LLM 的事情——只是把 OpenAI 格式的請求翻譯成 Playwright 操作，把網頁回覆翻譯回 OpenAI 格式回來。
@@ -124,11 +143,20 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 
 ---
 
-## 這個專案的定位
+## 這個專案適合你嗎？
 
-gollm-service 不是一個通用的生產級服務。它解決的是一個非常特定的問題：「我需要 Gemini Pro/Flash 的能力，但 API Rate Limit 不够用，而且我願意犠牲一點穩定性換取更大的模型可用性」。
+gollm-service 不是一個通用的生產級服務。它解決的是一個非常特定的問題：
 
-如果你也在做類似的 Agent 系統並且被 Rate Limit 困擾，或許可以參考這個思路——用瀏覽器自動化繞過 API 限制，缺點自己承擔。好與不好，看你的使用場景。
+**你的情境如果符合以下兩點，這個方案可能適用：**
+1. 你需要 Gemini Pro/Flash 的能力，但 API Rate Limit 不够用
+2. 你願意犠牲一點穩定性，換取更大的模型可用性
+
+**不適合的情境：**
+- 需要高併發（同一時間多個請求）
+- 需要穩定的延遲保證
+- 没有辨法維持穩定的 Google 登入狀態
+
+如果你在架構類似的 Agent 系統並被 Rate Limit 困擾，可以把 gollm-service 當作參考範例。重點不是「用 Playwright 包裝」，而是「當 SDK 不够用時，用瀏覽器自動化繞過限制」這個思路。
 
 ---
 

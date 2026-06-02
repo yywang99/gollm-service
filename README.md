@@ -21,7 +21,31 @@ npm run build && node dist/server/http-server.js
 
 服務運行在：`http://127.0.0.1:3001`
 
-**首次啟動**：將 `playwright.headless` 設為 `false`，手動完成 Google 帳號登入。之後可改回 `true`。
+**首次啟動：登入確認清單**
+
+```
+1. 將 service.gollmrc.json 中的 playwright.headless 設為 false
+2. 啟動服務：systemctl --user start gollm-service
+3. 確認瀏覽器已開啟：curl http://127.0.0.1:3001/health
+   → 此時 status 應為 "degraded"，session 為 "new" 或 "needs_reauth"
+4. 手動在瀏覽器中完成 Google 帳號登入
+5. 驗證 session 已建立：再次查詢 /health
+   → session 變為 "logged_in"
+6. 確認 Gemini 可用：在瀏覽器輸入任意問題，確認有回覆
+7. 登入成功後，可將 headless 改回 true 並重啟服務
+```
+
+**快速測試（不需登入）：**
+
+```bash
+# 健康檢查
+curl http://127.0.0.1:3001/health
+
+# 測試 API（首次可能需登入）
+curl -X POST http://127.0.0.1:3001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"flash","messages":[{"role":"user","content":"hello"}]}'
+```
 
 ---
 
@@ -130,6 +154,7 @@ HTTP Server (Fastify)
 
 ## ⚠️ 運維須知
 
+- **確認 service 名稱**：`systemctl --user list-units --type=service | grep gollm`
 - **單一實例**：依賴單一瀏覽器 Session，不支援高併發。
 - **Session 失效**：若 `session: needs_reauth`，需將 `headless: false` 並重新登入。
 - **瀏覽器僵死**：`pkill -9 -f gollm-service && systemctl --user start gollm-service`。

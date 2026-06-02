@@ -1,6 +1,6 @@
 # GoLLM Service — SPEC.md
 
-> **Specs are the contract.** If an AI agent or developer reads one document to understand this service, it should be this one.
+> **Specs are the contract.** If a developer or someone wants to deeply understand gollm-service's internals, this is the document to read.
 
 ---
 
@@ -291,8 +291,41 @@ isSameConversation(oldMsgs, newMsgs)?
 ## 9. 安全性考量
 
 - **Session Cookie**：存放在 `playwright.userDataDir`，應設定適當的檔案權限（建議 `chmod 700`）。
-- **API Key**：目前 `apiKey: "not-required"`，但若未來要加強安全，可替換為固定密鑰並在 `Authorization: Bearer <key>` header 驗證。
+- **API Key**：目前 `apiKey: "not-required"`，但若未來要加強安全，可替換為固定密鑰並在 `Authorization: Bearer *** header 驗證。
 - **Config 中的 Secret**：如果 `service.gollmrc.json` 包含任何敏感資訊，不要 commit 到 Git（已加入 `.gitignore`）。
+
+---
+
+## 10. 疑難排解（Troubleshooting）
+
+### Q: `/health` 回傳 `session: needs_reauth` 但我已經登入過了？
+**A:** Cookie 可能已過期。將 `headless` 改為 `false`，觀察瀏覽器是否跳出登入頁。重新登入後將 `headless` 改回 `true`。
+
+### Q: 模型一直說「已發送」但實際沒送出？
+**A:** 確認 `enableMediaSendReminder: true` 已開啟，並檢查 `/health` 的 `browser` 欄位是否為 `responsive`。若無效，嘗試重啟服務：`pkill -9 -f gollm-service && systemctl --user start gollm-service`。
+
+### Q: 工具清單被截斷，模型說「看不到某個工具」？
+**A:** 提高 `maxToolsSectionLength`（預設 64000）。但注意：過大的工具清單會增加 Prompt 長度並拖慢回應速度。若工具經常被截斷，建議移除不常用的工具定義，而非一味調大上限。
+
+### Q: 第一次請求後就卡住，Gemini 不回覆？
+**A:** 檢查 `/health` 的 `session` 欄位是否為 `logged_in`。若為 `new` 或 `needs_reauth`，代表尚未完成登入流程（見 README 的首次啟動確認清單）。
+
+### Q: `pkill` 找不到 process，服務關不掉？
+**A:** 先確認 service 實際名稱：`systemctl --user list-units --type=service | grep gollm`。正確的 kill 指令應為：`pkill -9 -f gollm-service`（用 process name 而非 service name）。
+
+### Q: `curl` 回應 500 或瀏覽器崩潰？
+**A:** 查看詳細日誌：`journalctl --user -u gollm-service -n 50 --no-pager`。常見原因包括：Prompt 太長導致超时、Selector 無法找到 DOM 元素（Gemini Web UI 可能改版）。
+
+---
+
+**情境設定範例：**
+
+| 情境 | 建議調整 |
+|------|---------|
+| 工具太多，常常被截斷 | `maxToolsSectionLength` 調大至 80000，代價是 Prompt 更長 |
+| 需要傳送圖片但模型假裝發送 | 確認 `enableMediaSendReminder: true`，並檢查 SPEC §3.3 |
+| 想減少 token 消耗 | `maxTranscriptLength` 調低至 40000（但可能遺漏早期對話資訊）|
+| 瀏覽器響應很慢 | `pollIntervalMs` 從 500 增至 1000，降低 CPU 負擔 |
 
 ---
 
