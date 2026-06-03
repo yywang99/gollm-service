@@ -86,6 +86,11 @@ export class PromptEngine {
     if (!newMsgs || newMsgs.length === 0) return false;
     if (newMsgs.length <= oldMsgs.length) return false;
 
+    // Guard: If there's a significant jump in message count (e.g., > 5),
+    // it's likely a strong indicator of a new session/web window being opened,
+    // even if chat_id matches. Force full injection to be safe.
+    if (newMsgs.length - oldMsgs.length > 5) return false;
+
     const oldChatId = oldMsgs[0]?.role === 'system' ? this.extractChatId(oldMsgs[0].content) : null;
     const newChatId = newMsgs[0]?.role === 'system' ? this.extractChatId(newMsgs[0].content) : null;
 
