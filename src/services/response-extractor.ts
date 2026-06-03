@@ -9,6 +9,28 @@ import { type Page } from "playwright";
 import { SELECTORS } from "../utils/selectors.js";
 import { POLLING, LIMITS } from "../utils/timings.js";
 
+// ── Paragraph Break Restoration ──────────────────────────────────────
+// textContent merges <p>A</p><p>B</p> into one string with no \n.
+// Detect long text with few newlines and insert paragraph breaks at
+// sentence boundaries (Chinese-style。！？ etc.) to restore readability.
+function restoreParagraphBreaks(text: string): string {
+  // Short text or text with already-decent line breaks — leave it alone
+  const existingBreaks = (text.match(/\n/g) || []).length;
+  if (text.length < 400 || existingBreaks >= text.length / 200) return text;
+
+  // At sentence-ending punctuation, insert one \n (but not after short lines)
+  const lines = text.split('\n');
+  const rebuilt = lines.map(line => {
+    const trimmed = line.trim();
+    if (trimmed.length < 40) return line; // skip short fragments
+    // Split at Chinese/English sentence endings and rejoin with \n
+    const segments = trimmed.split(/(?<=[。！？.!?])\s*/);
+    return segments.join('\n');
+  });
+
+  return rebuilt.join('\n');
+}
+
 export interface WaitForResponseResult {
   text: string;
   status: "ok" | "timeout";
@@ -182,7 +204,7 @@ export async function waitForStableResponse(
         return { text: '', status: 'timeout', stable: false };
       }
       console.log(`[POLL] Done after ${elapsed}ms, got ${result.length} chars`);
-      return { text: result, status: 'ok', stable: true };
+      return { text: restoreParagraphBreaks(result), status: 'ok', stable: true };
     }
 
     // Still waiting — check again after poll interval
@@ -198,7 +220,7 @@ export async function waitForStableResponse(
   });
   await clearPollState(page);
   console.log(`[POLL] TIMEOUT after ${elapsed}ms, result=${result ? result.length + 'chars' : 'empty'}`);
-  return { text: result || '', status: 'timeout', stable: false };
+  return { text: restoreParagraphBreaks(result || ''), status: 'timeout', stable: false };
 }
 
 export async function captureBaseline(page: Page): Promise<string> {
