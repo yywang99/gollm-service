@@ -1,7 +1,7 @@
 {
   "$schema": "https://gollm-service.schema",
   "name": "gollm-service",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Universal OpenAI-compatible LLM Microservice for OpenClaw & Hermes",
   "server": {
     "host": "127.0.0.1",
