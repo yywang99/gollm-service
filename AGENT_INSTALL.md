@@ -35,7 +35,7 @@ git clone https://github.com/your-org/gollm-service.git ~/gollm-service
 cd ~/gollm-service
 
 # 如果已經在 workspace 中：
-cd /home/yywang/gollm-service
+cd ~/gollm-service
 ```
 
 ### Step 2: 安裝依賴
@@ -75,8 +75,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/yywang/gollm-service
-ExecStart=/usr/bin/node /home/yywang/gollm-service/dist/server/http-server.js
+WorkingDirectory=%h/gollm-service
+ExecStart=/usr/bin/node %h/gollm-service/dist/server/http-server.js
 Restart=on-failure
 RestartSec=10
 
@@ -149,7 +149,7 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 
 | 錯誤訊息 | 原因 | 解決方式 |
 |----------|------|----------|
-| `sudo: 需要密碼` | sudo 沒有 NOPASSWD 設定 | 執行 `sudo visudo` 加入 `yywang ALL=(ALL) NOPASSWD: ALL` |
+| `sudo: 需要密碼` | sudo 沒有 NOPASSWD 設定 | 執行 `sudo visudo` 加入 `<USERNAME> ALL=(ALL) NOPASSWD: ALL`（請替換為當前使用者名稱） |
 | `port 3001 is already in use` | 舊的 gollm-service 行程還活著 | `pkill -9 -f gollm-service && systemctl --user restart gollm-service` |
 | `session: needs_reauth` | Google session 過期 | 將 `headless` 設為 `false`，重新登入 |
 | `browser: unresponsive` | Playwright CDP 無法連線 | `pkill -9 -f gollm-service && systemctl --user start gollm-service` |
@@ -183,7 +183,7 @@ systemctl --user stop gollm-service
 
 # 清除瀏覽器 profile
 rm -rf ~/.cache/ms-playwright/
-rm -rf /home/yywang/gollm-service/gollm-playwright-profile
+rm -rf ~/gollm-service/gollm-playwright-profile
 
 # 重新編譯（可選）
 npm run build
