@@ -10,7 +10,7 @@ import { getSessionManager } from "../services/session-manager.js";
 import { waitForStableResponse, captureBaseline } from "../services/response-extractor.js";
 import { SELECTORS, type SelectorType } from "../utils/selectors.js";
 import { TIMINGS } from "../utils/timings.js";
-import { withMutex } from "../services/request-mutex.js";
+import { withMutexAndTimeout, forceResetMutex } from "../services/request-mutex.js";
 import { DOMDoctor } from "../services/dom-doctor.js";
 import { parseToolCalls, detectHallucination } from "../utils/tool-parser.js";
 import { PromptEngine } from "../services/prompt-engine.js";
@@ -290,7 +290,7 @@ export async function executeGollmRPA(
   input: GollmInput,
   options: { thinkingLog?: boolean; playwrightConfig?: any } = {}
 ): Promise<GollmOutput> {
-  return await withMutex("gollm-rpa", async () => {
+  return await withMutexAndTimeout("gollm-rpa", async () => {
     const { messages, tools, promptConfig } = input;
     const { thinkingLog = true, playwrightConfig = {} } = options;
     const log = (msg: string) => { if (thinkingLog) console.log(`[GoLLM RPA] ${msg}`); };
