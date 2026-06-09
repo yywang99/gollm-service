@@ -20,6 +20,9 @@ export class PromptEngine {
 
   /**
    * Strips metadata from both OpenClaw and Hermes style messages.
+   * IMPORTANT: Context files (MEMORY.md, USER.md, AGENT.md, etc.) embedded
+   * inside the JSON metadata block are extracted and preserved, since they
+   * contain real agent context that should not be discarded.
    */
   cleanContent(content: string | any[]): string {
     if (!content) return "";
@@ -31,23 +34,85 @@ export class PromptEngine {
         .filter((p: any) => p.type === "text")
         .map((p: any) => {
           let partText = p.text || "";
-          const blockPat = /[^\\n]*\\(untrusted(?:\\s+metadata|\\s*,\\s*for\\s+context)\\):?\\s*\\n```(?:json)?\\n[\\s\\S]*?\\n```/gi;
-          partText = partText.replace(blockPat, '');
+          partText = this._stripMetadataPreservingContext(partText);
           return partText;
         });
       text = strippedParts.join("\\n");
     }
 
-    const metadataBlockPattern = /[^\\n]*\\(untrusted(?:\\s+metadata|\\s*,\\s*for\\s+context)\\):?\\s*\\n```(?:json)?\\n[\\s\\S]*?\\n```/gi;
-    text = text.replace(metadataBlockPattern, '');
-    text = text.replace(/^[^\\n]*\\(untrusted(?:\\s+metadata|\\s*,\\s*for\\s+context)\\):[^\\n]*$/gim, '');
-    text = text.replace(/^\\[Metadata\\][^\\n]*$/gim, '');
-    text = text.replace(/\\n{3,}/g, '\\n\\n').trim();
+    text = this._stripMetadataPreservingContext(text);
+    text = text.replace(/^\[Metadata\][^\n]*$/gim, '');
+    text = text.replace(/\n{3,}/g, '\\n\\n').trim();
 
     return text;
   }
 
-  private isMetadataContent(text: string): boolean {
+  /**
+   * Strips the JSON metadata block but extracts and preserves context file
+   * contents (MEMORY.md, USER.md, AGENT.md, WORKSPACE.md, RULES.md, etc.)
+   * that are embedded inside it.
+   */
+  private _stripMetadataPreservingContext(text: string): string {
+    // Pattern captures: prefix line + code fence + JSON body + closing fence
+    const jsonBlockPat = /([^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\n)(```(?:json)?)(\n[\s\S]*?\n)(```)/gi;
+    let preservedContext = "";
+    const contextFileNames = [
+      "MEMORY.md", "USER.md", "AGENT.md", "CLAUDE.md", "WORKSPACE.md",
+      "RULES.md", "SYSTEM.md", "PROFILE.md", "SOUL.md", "IDENTITY.md",
+      "memory.md", "user.md", "agent.md", "soul.md", "identity.md",
+      "claude.md", "workspace.md", "rules.md"
+    ];
+
+    text = text.replace(jsonBlockPat, (match, _prefix, _codeOpen, jsonBody, _codeClose) => {
+      try {
+        const jsonContent = jsonBody.trim();
+        const parsed = JSON.parse(jsonContent);
+        const extractedParts: string[] = [];
+        const allKeys = Object.keys(parsed);
+
+        for (const key of allKeys) {
+          const keyLower = key.toLowerCase();
+          // Match: "memory.md"/"memory"/"MEMORY" all map to the memory context file
+          // Also handle: memory_md, agent_md, etc.
+          const isContextFile = contextFileNames.some(
+            (name) => {
+              const n = name.toLowerCase();
+              // key matches name (e.g. "memory" == "memory", "MEMORY.md" == "memory.md")
+              // or key is the bare name without .md (e.g. "memory" matches "memory.md")
+              return keyLower === n
+                || keyLower === n.replace(/\.md$/, '')
+                || n.replace(/\.md$/, '') === keyLower;
+            }
+          );
+          if (isContextFile && typeof parsed[key] === "string" && parsed[key].trim()) {
+            extractedParts.push(`[${key}]\n${parsed[key].trim()}`);
+          }
+        }
+
+        if (extractedParts.length > 0) {
+          console.log(`[_stripMetadataPreservingContext] keys found: ${allKeys.join(', ')}`);
+          console.log(`[_stripMetadataPreservingContext] extracted ${extractedParts.length} context files: ${extractedParts.map(p => p.split('\n')[0]).join(', ')}`);
+          preservedContext += extractedParts.join("\n\n") + "\n\n";
+        }
+      } catch {
+        // JSON parse failed — block will be stripped below
+      }
+      return ""; // remove the JSON block
+    });
+
+    // Fallback: strip any remaining JSON blocks the regex didn't catch
+    const metadataBlockPattern =
+      /[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\n```(?:json)?\n[\s\S]*?\n```/gi;
+    text = text.replace(metadataBlockPattern, "");
+    text = text.replace(
+      /^[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):[^\n]*$/gim,
+      ""
+    );
+
+    return (text + (preservedContext ? "\n" + preservedContext.trim() : "")).trim();
+  }
+
+    private isMetadataContent(text: string): boolean {
     if (!text) return false;
     const t = text.trim();
     const isMetaStart = t.startsWith('Conversation info (untrusted') ||

@@ -141,13 +141,14 @@ async function typeInput(page: Page, text: string): Promise<void> {
   // Use evaluate + dispatchEvent instead of fill() to bypass contenteditable editable-check
   // fill() fails on Gemini's contenteditable div even though contenteditable="true"
   await page.evaluate(({ sel, txt }: { sel: string; txt: string }) => {
-    // @ts-expect-error — window/InputEvent are browser globals
+    // @ts-expect-error — window/document are browser globals inside page.evaluate
     const win = window as any;
     const el = win.document.querySelector(sel);
     if (el) {
       el.focus();
-      el.textContent = txt;
-      el.dispatchEvent(new win.InputEvent('input', { bubbles: true, inputType: 'insertText', data: txt }));
+      // Use execCommand instead of textContent to avoid Chromium renderer crash on large strings
+      win.document.execCommand('insertText', false, txt);
+      el.dispatchEvent(new win.InputEvent('input', { bubbles: true }));
     }
   }, { sel: workingSelector, txt: text });
 
