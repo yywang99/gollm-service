@@ -23,17 +23,11 @@ export const SELECTORS = {
   ],
 
   // Response / message container
-  // Priority: most specific first; body fallback in response-extractor will filter
   response: [
-    ".model-response-text",                  // 2024-2025 Gemini
+    "model-response .model-response-text",  // Latest Gemini
     "model-response",                        // custom element wrapper
-    "[role='article']",                      // ARIA article container
     ".markdown",                             // prose container
-    "c-wiz div[aria-label]",                 // Google WIZ container
-    "div[data-message-content]",             // message wrapper
-    "div.gen-content-wrapper",               // AI response wrapper
-    ".conversation-response-model",          // alternative model response
-    ".response-container-content",           // older container
+    ".response-container-content",           // alternative container
     "message-content",                       // generic message wrapper
   ],
 

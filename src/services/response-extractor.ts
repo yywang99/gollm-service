@@ -53,6 +53,8 @@ async function clearPollState(page: Page): Promise<void> {
  */
 function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs: number, postGenBufferMs: number): string {
   const safeStr = JSON.stringify(oldText);
+  // Escape single quotes so the selector string can be safely embedded in querySelectorAll('...')
+  const escapedSel = sel.replace(/'/g, "\\'");
   return `(function(){
     var _S = window.__pollState = window.__pollState || {lastText:'',stableCount:0,startTime:Date.now(),done:false,result:'',generationDoneTime:0};
     if (_S.done) return _S.result;
@@ -74,7 +76,7 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
       _S.generationDoneTime = Date.now();
     }
 
-    var b = document.querySelectorAll('${sel}');
+    var b = document.querySelectorAll('${escapedSel}');
     var ct = '';
     if (b.length > 0) {
       var last = b[b.length - 1];
