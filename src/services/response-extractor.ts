@@ -91,11 +91,21 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
       // Use textContent here too — innerText can lag during streaming
       var body = document.body ? (document.body.textContent || document.body.innerText) : '';
       ct = body
-        .replace(/思考型[\\s\\S]*/gi, '')
-        .replace(/Gemini[\\s\\S]*輸入[^\\n]*/gi, '')
-        .replace(/停止回覆[^\\n]*/gi, '')
-        .replace(/你說了[^\\n]*/gi, '')
-        .trim();
+              .replace(/思考型[\s\S]*/gi, '')
+              .replace(/Gemini[\s\S]*輸入[^\n]*/gi, '')
+              .replace(/停止回覆[^\n]*/gi, '')
+              .replace(/你說了[^\n]*/gi, '')
+              // Filter out Google Toolbar / gbar_ JavaScript code patterns
+              .replace(/catch\(e\)\{[\s\S]*?\}catch\(e\)\{[\s\S]*?\}/gi, '')
+              .replace(/Google\s+Inc\.[\s\S]*$/gi, '')
+              .replace(/[A-Z][a-z]+=function\([^)]*\)\{[\s\S]*?\};/g, '')
+              .replace(/\.DumpException\(e\)/g, '')
+              .replace(/this\.gbar;/g, '')
+              .trim();
+            // If body fallback still contains likely JS code, discard it
+            if (/^(?:var|const|let|function|\/\/|catch|\}\s*catch)/.test(ct)) {
+              ct = '';
+            }
       var inp = document.querySelector('.ql-editor,.ProseMirror,textarea,[contenteditable]');
       if (inp) {
         var inpT = (inp.innerText || '').trim();
