@@ -92,28 +92,27 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
     if (!ct || ct === ${safeStr}) {
       // Use textContent here too — innerText can lag during streaming
       var body = document.body ? (document.body.textContent || document.body.innerText) : '';
-      ct = body
-              .replace(/思考型[\s\S]*/gi, '')
-              .replace(/Gemini[\s\S]*輸入[^\n]*/gi, '')
-              .replace(/停止回覆[^\n]*/gi, '')
-              .replace(/你說了[^\n]*/gi, '')
-              // Filter out Google Toolbar / gbar_ JavaScript code patterns
-              .replace(/catch\(e\)\{[\s\S]*?\}catch\(e\)\{[\s\S]*?\}/gi, '')
-              .replace(/Google\s+Inc\.[\s\S]*$/gi, '')
-              .replace(/[A-Z][a-z]+=function\([^)]*\)\{[\s\S]*?\};/g, '')
-              .replace(/\.DumpException\(e\)/g, '')
-              .replace(/this\.gbar;/g, '')
-              .trim();
-            // If body fallback still contains likely JS code, discard it
-            if (/^(?:var|const|let|function|\/\/|catch|\}\s*catch)/.test(ct)) {
-              ct = '';
-            }
+      // Remove Gemini UI chrome with simple string operations (no complex regex)
+      var markers = ['思考型', 'Gemini', '輸入', '停止回覆', '你說了'];
+      for (var i = 0; i < markers.length; i++) {
+        var idx = body.indexOf(markers[i]);
+        if (idx >= 0) {
+          var end = body.indexOf('\n', idx);
+          if (end < 0) end = body.length;
+          body = body.substring(0, idx) + body.substring(end + 1);
+        }
+      }
+      // Filter Google Toolbar JS: if result starts with likely JS keywords, discard
+      var firstLine = body.split('\n')[0].trim();
+      if (firstLine.length > 0 && (firstLine.indexOf('=') > 0 || firstLine.indexOf('function') >= 0 || firstLine.indexOf('catch') === 0)) {
+        body = '';
+      }
+      ct = body.trim();
       var inp = document.querySelector('.ql-editor,.ProseMirror,textarea,[contenteditable]');
       if (inp) {
         var inpT = (inp.innerText || '').trim();
         if (inpT && ct.startsWith(inpT)) ct = ct.slice(inpT.length).trim();
       }
-      ct = ct.replace(/^(?:顯示程式碼\\s*|Show code\\s*)?(?:顯示思路\\s*|Show thought process\\s*)?(?:Gemini 說了|Gemini said|Gemini says|Gemini)\\s*/i, '').trim();
       if (ct === ${safeStr} || ct === '') ct = '';
     }
 
