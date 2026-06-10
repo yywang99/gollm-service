@@ -54,13 +54,14 @@ export class PromptEngine {
    */
   private _stripMetadataPreservingContext(text: string): string {
     // Pattern captures: prefix line + code fence + JSON body + closing fence
-    const jsonBlockPat = /([^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\n)(```(?:json)?)(\n[\s\S]*?\n)(```)/gi;
+    // Modified to support CRLF (\r\n) line endings
+    const jsonBlockPat = /([^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\r?\n)(```(?:json)?\r?\n)([\s\S]*?\r?\n)(```)/gi;
     let preservedContext = "";
     const contextFileNames = [
       "MEMORY.md", "USER.md", "AGENT.md", "CLAUDE.md", "WORKSPACE.md",
       "RULES.md", "SYSTEM.md", "PROFILE.md", "SOUL.md", "IDENTITY.md",
       "memory.md", "user.md", "agent.md", "soul.md", "identity.md",
-      "claude.md", "workspace.md", "rules.md"
+      "claude.md", "workspace.md", "rules.md", "agent", "soul", "identity"
     ];
 
     text = text.replace(jsonBlockPat, (match, _prefix, _codeOpen, jsonBody, _codeClose) => {
@@ -71,21 +72,28 @@ export class PromptEngine {
         const allKeys = Object.keys(parsed);
 
         for (const key of allKeys) {
-          const keyLower = key.toLowerCase();
-          // Match: "memory.md"/"memory"/"MEMORY" all map to the memory context file
-          // Also handle: memory_md, agent_md, etc.
+          // Extract base name of the path (handles both forward slash and backslash in keys)
+          const baseKey = key.split(/[/\\]/).pop() || "";
+          const baseKeyLower = baseKey.toLowerCase();
+          
+          // Match:
+          // 1. In contextFileNames whitelist (e.g. memory, USER.md, agent)
+          // 2. Contains path separators (e.g. ~/.openclaw/workspace/custom_prompt)
+          // 3. Ends with a file extension (e.g. custom_prompt.txt, package.json)
           const isContextFile = contextFileNames.some(
             (name) => {
               const n = name.toLowerCase();
-              // key matches name (e.g. "memory" == "memory", "MEMORY.md" == "memory.md")
-              // or key is the bare name without .md (e.g. "memory" matches "memory.md")
-              return keyLower === n
-                || keyLower === n.replace(/\.md$/, '')
-                || n.replace(/\.md$/, '') === keyLower;
+              return baseKeyLower === n
+                || baseKeyLower === n.replace(/\.md$/, '')
+                || n.replace(/\.md$/, '') === baseKeyLower;
             }
-          );
+          ) ||
+          key.includes('/') ||
+          key.includes('\\') ||
+          /\.[a-zA-Z0-9]{1,10}$/.test(baseKey);
+
           if (isContextFile && typeof parsed[key] === "string" && parsed[key].trim()) {
-            extractedParts.push(`[${key}]\n${parsed[key].trim()}`);
+            extractedParts.push(`[${baseKey}]\n${parsed[key].trim()}`);
           }
         }
 
@@ -100,9 +108,9 @@ export class PromptEngine {
       return ""; // remove the JSON block
     });
 
-    // Fallback: strip any remaining JSON blocks the regex didn't catch
+    // Fallback: strip any remaining JSON blocks the regex didn't catch (with CRLF support)
     const metadataBlockPattern =
-      /[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\n```(?:json)?\n[\s\S]*?\n```/gi;
+      /[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\r?\n```(?:json)?\r?\n[\s\S]*?\r?\n```/gi;
     text = text.replace(metadataBlockPattern, "");
     text = text.replace(
       /^[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):[^\n]*$/gim,
@@ -112,15 +120,16 @@ export class PromptEngine {
     return (text + (preservedContext ? "\n" + preservedContext.trim() : "")).trim();
   }
 
-    private isMetadataContent(text: string): boolean {
+  private isMetadataContent(text: string): boolean {
     if (!text) return false;
     const t = text.trim();
     const isMetaStart = t.startsWith('Conversation info (untrusted') ||
       t.startsWith('[Metadata]') ||
       t.startsWith('Conversation context (untrusted');
     if (!isMetaStart) return false;
-    const blockPat = /[^\\n]*\\(untrusted(?:\\s+metadata|\\s*,\\s*for\\s+context)\\):?\\s*\\n```(?:json)?\\n[\\s\\S]*?\\n```/gi;
-    const stripped = t.replace(blockPat, '').replace(/^\\s+/, '').trim();
+    // Fixed literal regex blockPat to use single backslashes and support CRLF
+    const blockPat = /[^\n]*\(untrusted(?:\s+metadata|\s*,\s*for\s+context)\):?\s*\r?\n```(?:json)?\r?\n[\s\S]*?\r?\n```/gi;
+    const stripped = t.replace(blockPat, '').replace(/^\s+/, '').trim();
     return stripped.length === 0;
   }
 
@@ -174,7 +183,7 @@ export class PromptEngine {
     return newMsgs.slice(oldMsgs.length);
   }
 
-  private formatIncrementalPrompt(newMsgs: any[]): string {
+  private formatIncrementalPrompt(newMsgs: any[], tools?: any[]): string {
     let prompt = "";
     for (const msg of newMsgs) {
       if (msg.role === "assistant") continue;
@@ -191,7 +200,19 @@ export class PromptEngine {
     }
     if (prompt.trim() && newMsgs.length > 0) {
       const lastMsg = newMsgs[newMsgs.length - 1];
-      if (lastMsg.role === "tool" || lastMsg.role === "function") {
+      if (tools && tools.length > 0) {
+        const toolsJson = JSON.stringify(tools, null, 2);
+        prompt += `\\n[System Instructions - Available Tools]\\n`;
+        prompt += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\\n`;
+        prompt += `<tool_call>\\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\\n</tool_call>\\n\\n`;
+        prompt += `Available Tools:\\n${toolsJson}\\n\\n`;
+
+        if (lastMsg.role === "tool" || lastMsg.role === "function") {
+          prompt += `[System Instruction]: Analyze the tool output above. If you need to perform more actions, output the next <tool_call>. Otherwise, provide your final response to the user.`;
+        } else {
+          prompt += `[System Instruction]: If you need to perform an action, you MUST output the next <tool_call>. Otherwise, provide your final response to the user.`;
+        }
+      } else if (lastMsg.role === "tool" || lastMsg.role === "function") {
         prompt += `\\n[System Instruction]: Analyze the tool output above. If you need to perform more actions, output the next <tool_call>. Otherwise, provide your final response to the user.`;
       }
     }
@@ -203,6 +224,10 @@ export class PromptEngine {
     log(`IN: ${messages.length} msgs, tools=${tools?.length ?? 0}`);
 
     const systemMsg = messages.find((m: any) => m.role === 'system');
+    const rawContent = systemMsg ? (typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content)) : '';
+    if (rawContent.includes('memory') || rawContent.includes('user') || rawContent.includes('MEMORY') || rawContent.includes('SOUL')) {
+      console.log('[DEBUG raw system content PREVIEW]:', rawContent.substring(0, 800));
+    }
     const systemText = systemMsg ? this.cleanContent(systemMsg.content) : '';
     log(`system msg found=${!!systemMsg}, cleanedLen=${systemText.length}`);
 
@@ -307,6 +332,9 @@ export class PromptEngine {
 
     const lastRole = messages.length > 0 ? messages[messages.length - 1].role : "";
     if (lastRole === "user" || lastRole === "tool" || lastRole === "function") {
+      if (tools && tools.length > 0) {
+        transcript += `\\n[System Instruction]: Remember, you must use the <tool_call> format for all tool calls. Do not describe your tool call or output any preamble before the tool call.\\n`;
+      }
       transcript += `[Assistant]:\\n`;
     }
 
@@ -335,7 +363,7 @@ export class PromptEngine {
       if (sameChatId) {
         console.log(`[PromptEngine] SYSTEM CHANGED but same chat_id → incremental`);
         const newMsgsList = this.getNewMessages(oldMsgs, messages);
-        const newText = this.formatIncrementalPrompt(newMsgsList);
+        const newText = this.formatIncrementalPrompt(newMsgsList, tools);
         if (newText && !this.isMetadataContent(newText)) {
           return { text: newText, requireNewChat: false };
         }
@@ -349,7 +377,7 @@ export class PromptEngine {
 
     if (same) {
       const newMsgsList = this.getNewMessages(oldMsgs, messages);
-      const newText = this.formatIncrementalPrompt(newMsgsList);
+      const newText = this.formatIncrementalPrompt(newMsgsList, tools);
       if (newText && !this.isMetadataContent(newText)) return { text: newText, requireNewChat: false };
 
       const hasNewUserContent = newMsgsList.some((m: any) =>
@@ -360,7 +388,18 @@ export class PromptEngine {
         return { text: this.formatTranscript(messages, tools), requireNewChat: false };
       }
       const lastUser = this.extractLatestUserMessage(messages);
-      if (lastUser) return { text: lastUser, requireNewChat: false };
+      if (lastUser) {
+        let text = lastUser;
+        if (tools && tools.length > 0) {
+          const toolsJson = JSON.stringify(tools, null, 2);
+          text += `\\n\\n[System Instructions - Available Tools]\\n`;
+          text += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\\n`;
+          text += `<tool_call>\\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\\n</tool_call>\\n\\n`;
+          text += `Available Tools:\\n${toolsJson}\\n\\n`;
+          text += `[System Instruction]: If you need to perform an action, you MUST output the next <tool_call>. Otherwise, provide your final response to the user.`;
+        }
+        return { text, requireNewChat: false };
+      }
     }
 
     console.log(`[PromptEngine] FALLBACK → full injection`);

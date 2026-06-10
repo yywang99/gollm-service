@@ -24,12 +24,23 @@ export async function chatRoute(fastify: FastifyInstance, opts: { config: any })
     console.log(`[GoLLM Chat] Incoming ${messages.length} messages, ${tools.length} tools`);
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
+      const contentLen = (m.content as any)?.length ?? '?';
       const contentPreview = typeof m.content === 'string'
         ? m.content.slice(0, 200).replace(/\n/g, '\\n')
         : Array.isArray(m.content)
-          ? `[Array(${(m.content as any[]).length})]`
+          ? `[Array(${contentLen})]`
           : String(m.content).slice(0, 100);
-      console.log(`[GoLLM Chat]   [${i}] role=${m.role} content(${typeof m.content === 'string' ? m.content.length : '?'}): ${contentPreview}`);
+      console.log(`[GoLLM Chat]   [${i}] role=${m.role} content(${contentLen}): ${contentPreview}`);
+      // Deep-debug: always log system message content (first 2000 chars) for diagnosis
+      if (m.role === 'system') {
+        const raw = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+        console.log('[DEBUG system content FULL PREVIEW (first 2000)]:', raw.substring(0, 2000));
+        if (raw.includes('SOUL') || raw.includes('IDENTITY') || raw.includes('memory') || raw.includes('untrusted')) {
+          console.log('[DEBUG system content snippet with context keywords]:', raw.substring(0, 2000));
+        }
+        // Also log ALL keys of the message object to find hidden context fields
+        console.log('[DEBUG system message KEYS]:', Object.keys(m).join(', '));
+      }
     }
 
     // 1. Message passthrough — NO content stripping.
