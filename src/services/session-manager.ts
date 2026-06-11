@@ -187,7 +187,7 @@ export class SessionManager {
 
     this.context = await chromium.launchPersistentContext(this.options.userDataDir!, {
       headless: this.options.headless,
-      viewport: null,
+      viewport: { width: 1280, height: 800 },
       args: stealthArgs,
       userAgent:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
