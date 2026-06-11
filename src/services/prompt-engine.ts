@@ -145,14 +145,18 @@ export class PromptEngine {
   }
 
   private extractChatId(systemContent: string): string | null {
-    const match = systemContent.match(/```json\\s*(\\{[\\s\\S]*?\\})\\s*```/i);
-    if (!match) return null;
-    try {
-      const parsed = JSON.parse(match[1]);
-      return parsed.chat_id ?? null;
-    } catch {
-      return null;
+    // Try JSON code block first
+    const match = systemContent.match(/```json\s*(\{[\s\S]*?\})\s*```/i);
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[1]);
+        if (parsed.chat_id) return parsed.chat_id;
+      } catch { /* fall through */ }
     }
+    // Fallback: extract "chat_id": "value" directly (OpenClaw embeds chat_id in text)
+    const directMatch = systemContent.match(/"chat_id"\s*:\s*"([^"]+)"/);
+    if (directMatch) return directMatch[1];
+    return null;
   }
 
   private isSameConversation(oldMsgs: any[], newMsgs: any[]): boolean {
@@ -192,28 +196,26 @@ export class PromptEngine {
       if (msg.role === "system") continue;
 
       if (msg.role === "user") {
-        prompt += `${text}\\n\\n`;
+        prompt += `${text}\n\n`;
       } else if (msg.role === "tool" || msg.role === "function") {
         const toolName = (msg.name || msg.tool_call_id || "tool").replace(/__/g, ':');
-        prompt += `[Tool Output (${toolName})]:\\n${text}\\n\\n`;
+        prompt += `[Tool Output (${toolName})]:\n${text}\n\n`;
       }
     }
     if (prompt.trim() && newMsgs.length > 0) {
       const lastMsg = newMsgs[newMsgs.length - 1];
       if (tools && tools.length > 0) {
-        const toolsJson = JSON.stringify(tools, null, 2);
-        prompt += `\\n[System Instructions - Available Tools]\\n`;
-        prompt += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\\n`;
-        prompt += `<tool_call>\\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\\n</tool_call>\\n\\n`;
-        prompt += `Available Tools:\\n${toolsJson}\\n\\n`;
+        // Lightweight tool reminder — names only, not full schemas
+        const toolNames = tools.map((t: any) => t.name).join(", ");
+        prompt += `\n\n[Tools available: ${toolNames}]`;
 
         if (lastMsg.role === "tool" || lastMsg.role === "function") {
-          prompt += `[System Instruction]: Analyze the tool output above. If you need to perform more actions, output the next <tool_call>. Otherwise, provide your final response to the user.`;
+          prompt += `\n[System Instruction]: Analyze the tool output above. If you need to perform more actions, output the next <tool_call>. Otherwise, provide your final response to the user.`;
         } else {
-          prompt += `[System Instruction]: If you need to perform an action, you MUST output the next <tool_call>. Otherwise, provide your final response to the user.`;
+          prompt += `\n[System Instruction]: If you need to perform an action, you MUST output the next <tool_call>. Otherwise, provide your final response to the user.`;
         }
       } else if (lastMsg.role === "tool" || lastMsg.role === "function") {
-        prompt += `\\n[System Instruction]: Analyze the tool output above. If you need to perform more actions, output the next <tool_call>. Otherwise, provide your final response to the user.`;
+        prompt += `\n[System Instruction]: Analyze the tool output above. If you need to perform more actions, output the next <tool_call>. Otherwise, provide your final response to the user.`;
       }
     }
     return prompt.trim();
@@ -346,10 +348,22 @@ export class PromptEngine {
   determinePromptStrategy(session: any, messages: any[], tools?: any[]): { text: string; requireNewChat: boolean } {
     if (!messages || messages.length === 0) return { text: "", requireNewChat: false };
 
-    // ── Step 1: Extract chat_id from the system message (if any) ─────────────
-    const newChatId = messages.find((m: any) => m.role === 'system')
-      ? this.extractChatId(messages.find((m: any) => m.role === 'system').content) ?? null
-      : null;
+    // ── Step 1: Extract chat_id ──────────────────────────────────────────────
+    // Primary: from system message (Hermes style)
+    let newChatId: string | null = null;
+    const systemMsg = messages.find((m: any) => m.role === 'system');
+    if (systemMsg) {
+      newChatId = this.extractChatId(systemMsg.content) ?? null;
+    }
+    // Fallback: from user messages (OpenClaw style — JSON block in user content)
+    if (!newChatId) {
+      for (const m of messages) {
+        if (m.role === 'user' && typeof m.content === 'string') {
+          const fromUser = this.extractChatId(m.content);
+          if (fromUser) { newChatId = fromUser; break; }
+        }
+      }
+    }
     const oldChatId = session.getLastChatId();
 
     // ── Step 2: Detect explicit NEW CHAT signals ─────────────────────────────
@@ -362,6 +376,7 @@ export class PromptEngine {
     const hasNewCommand = /\b\/new\b/i.test(lastUserText);
     // Signal B: No prior chat_id stored → first request ever or session was reset
     const isFirstRequest = oldChatId === null;
+    console.log(`[DEBUG determinePromptStrategy] newChatId=${newChatId}, oldChatId=${oldChatId}, isFirstRequest=${isFirstRequest}`);
     // Signal C: chat_id changed → different conversation thread
     const chatIdChanged = !isFirstRequest && newChatId !== null && newChatId !== oldChatId;
 
@@ -373,37 +388,29 @@ export class PromptEngine {
       return { text: this.formatTranscript(messages, tools), requireNewChat: true };
     }
 
-    // ── Step 3: Incremental — append only the latest user message ─────────────
-    // Skip metadata-only messages to find the real user content
-    let latestUserContent: string | null = null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role !== 'user') continue;
-      const text = typeof m.content === 'string' ? this.cleanContent(m.content) : "";
-      if (text && !this.isMetadataContent(text)) {
-        latestUserContent = text;
-        break;
+    // ── Step 3: Incremental — diff messages to find new updates ──────────────
+    const oldMsgs = session.getLastProcessedMessages() || [];
+    if (this.isSameConversation(oldMsgs, messages)) {
+      const newMsgs = this.getNewMessages(oldMsgs, messages);
+      const newText = this.formatIncrementalPrompt(newMsgs, tools);
+      if (newText) {
+        console.log(`[PromptEngine] Incremental (chatId=${newChatId ?? 'none'}), newText length=${newText.length}`);
+        session.setLastChatId(newChatId);
+        return { text: newText, requireNewChat: false };
+      }
+      
+      // Fallback: if no new text (e.g. metadata only), check for last user message
+      const lastUser = this.extractLatestUserMessage(messages);
+      if (lastUser) {
+        console.log(`[PromptEngine] Incremental Fallback (chatId=${newChatId ?? 'none'}), userMsg=${lastUser.substring(0, 50)}...`);
+        session.setLastChatId(newChatId);
+        return { text: lastUser, requireNewChat: false };
       }
     }
 
-    if (!latestUserContent) {
-      // No real user content found — fall back to full injection.
-      console.log(`[PromptEngine] No user content found → full injection`);
-      return { text: this.formatTranscript(messages, tools), requireNewChat: false };
-    }
-
-    // Build incremental prompt: latest user message + tool instructions
-    let prompt = latestUserContent;
-    if (tools && tools.length > 0) {
-      const toolsJson = JSON.stringify(tools, null, 2);
-      prompt += `\n\n[System Instructions - Available Tools]\n`;
-      prompt += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\n`;
-      prompt += `<tool_call>\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n</tool_call>\n\n`;
-      prompt += `Available Tools:\n${toolsJson}\n\n`;
-      prompt += `[System Instruction]: If you need to perform an action, you MUST output the next <tool_call>. Otherwise, provide your final response to the user.`;
-    }
-
-    console.log(`[PromptEngine] Incremental (chatId=${newChatId ?? 'none'}), userMsg=${latestUserContent.substring(0, 50)}...`);
-    return { text: prompt, requireNewChat: false };
+    // Fall back to full injection if not same conversation or no messages found
+    console.log(`[PromptEngine] Diverged or empty continuation → full injection`);
+    session.setLastChatId(newChatId);
+    return { text: this.formatTranscript(messages, tools), requireNewChat: true };
   }
 }

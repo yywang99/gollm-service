@@ -304,6 +304,18 @@ export async function executeGollmRPA(
       userDataDir: playwrightConfig?.userDataDir,
     });
 
+    // Only reset session state when explicitly signalled (e.g., /new command).
+    // This clears lastChatId so determinePromptStrategy sees isFirstRequest=true
+    // and triggers full injection for the first message of a new conversation.
+    const lastMsg = messages[messages.length - 1];
+    const lastUserText = (lastMsg?.role === 'user' && typeof lastMsg.content === 'string')
+      ? lastMsg.content.trim()
+      : "";
+    const hasNewCommand = /^\/new\b/i.test(lastUserText);
+    if (hasNewCommand) {
+      session.resetState();
+    }
+
     const promptData = promptEngine.determinePromptStrategy(session, messages, tools);
     if (!promptData.text) throw new Error("No prompt extracted.");
 

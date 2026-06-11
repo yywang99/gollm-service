@@ -30,6 +30,8 @@ export class SessionManager {
   private _targetMode: "flash-lite" | "flash" | "pro" | null = null;
   private _lastError: string | null = null;
   private _lastErrorTime: number | null = null;
+  // NOTE: not truly private — used across the class and accessed via get/set for persistence
+  public lastChatId: string | null = null;
 
   getLastProcessedMessages(): any[] {
     return this.lastProcessedMessages;
@@ -40,11 +42,11 @@ export class SessionManager {
   }
 
   getLastChatId(): string | null {
-    return (this as any)._lastChatId ?? null;
+    return this.lastChatId ?? null;
   }
 
   setLastChatId(id: string | null) {
-    (this as any)._lastChatId = id;
+    this.lastChatId = id;
   }
 
   /**
@@ -53,9 +55,11 @@ export class SessionManager {
    */
   resetState(): void {
     this.lastProcessedMessages = [];
-    (this as any)._lastChatId = null;
+    // Reset lastChatId so next determinePromptStrategy sees isFirstRequest=true
+    // and triggers full injection for the first message of the new conversation.
+    this.lastChatId = null;
     this.state = "new";
-    console.log("[SessionManager] Session state reset");
+    console.log("[SessionManager] Session state reset (lastChatId cleared)");
   }
 
   getLastError(): { message: string; time: number } | null {
@@ -470,9 +474,12 @@ export class SessionManager {
     // Dismiss any overlay/backdrop that may block navigation
     await this.dismissOverlays();
 
-    // Reset session state so next determinePromptStrategy sees a fresh context.
-    // This ensures full injection on the first message of the new conversation.
+    // Reset session state but preserve the active lastChatId.
+    // This ensures that subsequent turns of this conversation use the
+    // incremental strategy instead of resetting to a full injection.
+    const activeChatId = this.lastChatId;
     this.resetState();
+    this.lastChatId = activeChatId;
 
     // Direct navigation to /app creates a fresh new chat page.
     // This is more reliable than clicking the "New chat" button,
