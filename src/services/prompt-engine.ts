@@ -345,64 +345,65 @@ export class PromptEngine {
 
   determinePromptStrategy(session: any, messages: any[], tools?: any[]): { text: string; requireNewChat: boolean } {
     if (!messages || messages.length === 0) return { text: "", requireNewChat: false };
-    const oldMsgs = session.getLastProcessedMessages() || [];
-    console.log(`[PromptEngine] determinePromptStrategy: ${messages.length} msgs, oldMsgs=${oldMsgs.length}`);
 
-    const stripModelSwitchNotes = (content: any): string => {
-      const raw = typeof content === 'string' ? content : JSON.stringify(content ?? '');
-      return raw.replace(/\\[Note: model was just switched[^\\]]*\\]\\s*/gi, '').trim();
-    };
-    const oldSystem = oldMsgs.find((m: any) => m.role === 'system')?.content;
-    const newSystem = messages.find((m: any) => m.role === 'system')?.content;
-    const oldSystemNorm = stripModelSwitchNotes(oldSystem ?? '');
-    const newSystemNorm = stripModelSwitchNotes(newSystem ?? '');
-    const systemChanged = oldSystemNorm !== newSystemNorm;
+    // ── Step 1: Extract chat_id from the system message (if any) ─────────────
+    const newChatId = messages.find((m: any) => m.role === 'system')
+      ? this.extractChatId(messages.find((m: any) => m.role === 'system').content) ?? null
+      : null;
+    const oldChatId = session.getLastChatId();
 
-    if (systemChanged) {
-      const sameChatId = this.isSameConversation(oldMsgs, messages);
-      if (sameChatId) {
-        console.log(`[PromptEngine] SYSTEM CHANGED but same chat_id → incremental`);
-        const newMsgsList = this.getNewMessages(oldMsgs, messages);
-        const newText = this.formatIncrementalPrompt(newMsgsList, tools);
-        if (newText && !this.isMetadataContent(newText)) {
-          return { text: newText, requireNewChat: false };
-        }
-      }
-      console.log(`[PromptEngine] SYSTEM CHANGED → full injection`);
+    // ── Step 2: Detect explicit NEW CHAT signals ─────────────────────────────
+    const lastMsg = messages[messages.length - 1];
+    const lastUserText = (lastMsg?.role === 'user' && typeof lastMsg.content === 'string')
+      ? lastMsg.content
+      : "";
+
+    // Signal A: /new command in the latest user message
+    const hasNewCommand = /\b\/new\b/i.test(lastUserText);
+    // Signal B: No prior chat_id stored → first request ever or session was reset
+    const isFirstRequest = oldChatId === null;
+    // Signal C: chat_id changed → different conversation thread
+    const chatIdChanged = !isFirstRequest && newChatId !== null && newChatId !== oldChatId;
+
+    const needFullInjection = hasNewCommand || isFirstRequest || chatIdChanged;
+
+    if (needFullInjection) {
+      console.log(`[PromptEngine] Full injection (newCmd=${hasNewCommand}, first=${isFirstRequest}, chatIdChanged=${chatIdChanged})`);
+      session.setLastChatId(newChatId);
       return { text: this.formatTranscript(messages, tools), requireNewChat: true };
     }
 
-    const same = this.isSameConversation(oldMsgs, messages);
-    console.log(`[PromptEngine] isSameConversation=${same}`);
-
-    if (same) {
-      const newMsgsList = this.getNewMessages(oldMsgs, messages);
-      const newText = this.formatIncrementalPrompt(newMsgsList, tools);
-      if (newText && !this.isMetadataContent(newText)) return { text: newText, requireNewChat: false };
-
-      const hasNewUserContent = newMsgsList.some((m: any) =>
-        m.role === 'user' && !this.isMetadataContent(this.cleanContent(m.content))
-      );
-      if (!hasNewUserContent) {
-        console.log(`[PromptEngine] NO real user content → full injection (same conv)`);
-        return { text: this.formatTranscript(messages, tools), requireNewChat: false };
-      }
-      const lastUser = this.extractLatestUserMessage(messages);
-      if (lastUser) {
-        let text = lastUser;
-        if (tools && tools.length > 0) {
-          const toolsJson = JSON.stringify(tools, null, 2);
-          text += `\\n\\n[System Instructions - Available Tools]\\n`;
-          text += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\\n`;
-          text += `<tool_call>\\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\\n</tool_call>\\n\\n`;
-          text += `Available Tools:\\n${toolsJson}\\n\\n`;
-          text += `[System Instruction]: If you need to perform an action, you MUST output the next <tool_call>. Otherwise, provide your final response to the user.`;
-        }
-        return { text, requireNewChat: false };
+    // ── Step 3: Incremental — append only the latest user message ─────────────
+    // Skip metadata-only messages to find the real user content
+    let latestUserContent: string | null = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== 'user') continue;
+      const text = typeof m.content === 'string' ? this.cleanContent(m.content) : "";
+      if (text && !this.isMetadataContent(text)) {
+        latestUserContent = text;
+        break;
       }
     }
 
-    console.log(`[PromptEngine] FALLBACK → full injection`);
-    return { text: this.formatTranscript(messages, tools), requireNewChat: true };
+    if (!latestUserContent) {
+      // No real user content found — fall back to full injection.
+      console.log(`[PromptEngine] No user content found → full injection`);
+      return { text: this.formatTranscript(messages, tools), requireNewChat: false };
+    }
+
+    // Build incremental prompt: latest user message + tool instructions
+    let prompt = latestUserContent;
+    if (tools && tools.length > 0) {
+      const toolsJson = JSON.stringify(tools, null, 2);
+      prompt += `\n\n[System Instructions - Available Tools]\n`;
+      prompt += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\n`;
+      prompt += `<tool_call>\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n</tool_call>\n\n`;
+      prompt += `Available Tools:\n${toolsJson}\n\n`;
+      prompt += `[System Instruction]: If you need to perform an action, you MUST output the next <tool_call>. Otherwise, provide your final response to the user.`;
+    }
+
+    console.log(`[PromptEngine] Incremental (chatId=${newChatId ?? 'none'}), userMsg=${latestUserContent.substring(0, 50)}...`);
+    return { text: prompt, requireNewChat: false };
   }
 }

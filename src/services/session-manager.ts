@@ -39,6 +39,25 @@ export class SessionManager {
     this.lastProcessedMessages = msgs;
   }
 
+  getLastChatId(): string | null {
+    return (this as any)._lastChatId ?? null;
+  }
+
+  setLastChatId(id: string | null) {
+    (this as any)._lastChatId = id;
+  }
+
+  /**
+   * Reset all session state — used when starting a fresh conversation
+   * (e.g., after /new, service restart, or chat_id change).
+   */
+  resetState(): void {
+    this.lastProcessedMessages = [];
+    (this as any)._lastChatId = null;
+    this.state = "new";
+    console.log("[SessionManager] Session state reset");
+  }
+
   getLastError(): { message: string; time: number } | null {
     if (!this._lastError) return null;
     return { message: this._lastError, time: this._lastErrorTime ?? 0 };
@@ -450,6 +469,10 @@ export class SessionManager {
 
     // Dismiss any overlay/backdrop that may block navigation
     await this.dismissOverlays();
+
+    // Reset session state so next determinePromptStrategy sees a fresh context.
+    // This ensures full injection on the first message of the new conversation.
+    this.resetState();
 
     // Direct navigation to /app creates a fresh new chat page.
     // This is more reliable than clicking the "New chat" button,
