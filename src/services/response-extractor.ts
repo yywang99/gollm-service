@@ -97,13 +97,13 @@ function buildCheckFn(sel: string, oldText: string, stableThr: number, timeoutMs
       for (var i = 0; i < markers.length; i++) {
         var idx = body.indexOf(markers[i]);
         if (idx >= 0) {
-          var end = body.indexOf('\n', idx);
+          var end = body.indexOf('\\n', idx);
           if (end < 0) end = body.length;
           body = body.substring(0, idx) + body.substring(end + 1);
         }
       }
       // Filter Google Toolbar JS: if result starts with likely JS keywords, discard
-      var firstLine = body.split('\n')[0].trim();
+      var firstLine = body.split('\\n')[0].trim();
       if (firstLine.length > 0 && (firstLine.indexOf('=') > 0 || firstLine.indexOf('function') >= 0 || firstLine.indexOf('catch') === 0)) {
         body = '';
       }
