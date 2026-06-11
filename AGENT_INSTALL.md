@@ -125,6 +125,8 @@ echo "✅ Login confirmed!"
 systemctl --user restart gollm-service
 ```
 
+> 💡 **運維提示**：Playwright 的瀏覽器二進位執行檔（主程式，位於 `~/.cache/ms-playwright/`）與使用者的 Profile 狀態是解耦且完全獨立的。登入資訊、Cookies 與 Local Storage 全數存在您專案根目錄的 `gollm-playwright-profile` 資料夾下。這意味著就算您執行清除並重裝 Playwright 瀏覽器、更新套件或在有頭/無頭（headed/headless）間切換，**都不會造成登入狀態遺失**，只要保持 `gollm-playwright-profile` 目錄完整即可。
+
 ---
 
 ## 驗證流程

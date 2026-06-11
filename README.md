@@ -35,6 +35,10 @@ npm run build && node dist/server/http-server.js
 7. 登入成功後，可將 headless 改回 true 並重啟服務
 ```
 
+> 💡 **提示**：Playwright 的瀏覽器執行檔與使用者登入 Profile（包含登入狀態、Cookies 等）是完全分離的。瀏覽器主程式位於系統快取中（例如 `~/.cache/ms-playwright/`），而登入資料則完整保存在專案目錄的 `gollm-playwright-profile` 資料夾。因此，不論是升級、重新安裝、或是切換無頭（headless）瀏覽器二進位檔，**均不會影響或遺失**您已經登入的 Google 帳號 Session。
+
+---
+
 **快速測試（不需登入）：**
 
 ```bash

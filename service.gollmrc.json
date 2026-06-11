@@ -9,7 +9,7 @@
   },
   "playwright": {
     "browser": "chromium",
-    "headless": false,
+    "headless": true,
     "userDataDir": "gollm-playwright-profile",
     "stealth": true
   },
