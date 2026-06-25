@@ -181,11 +181,34 @@ isSameConversation(oldMsgs, newMsgs)?
 ### 5.3 Metadata 剝離
 
 `cleanContent()` 會移除：
-- OpenClaw 格式：`Conversation info (untrusted metadata):\n\`\`\`json\n{...}\n\`\`\``
+- OpenClaw 格式：`Conversation info (untrusted metadata):\n\n\`\`\`json\n{...}\n\`\`\`\n`
 - Hermes 格式：`[Metadata]\n...`
 - 單行 header：`Conversation context (untrusted ...): ...`
 
 避免這些 metadata 進入 Gemini 污染 Prompt。
+
+### 5.4 CacheAligner（可選，預設開啟）
+
+`enableCacheAligner: true` 時，`formatTranscript()` 會對 system prompt 套用 `_extractDynamicContext()`：
+
+1. 從 system text 中偵測並提取動態內容（日期、`[Note: model was just switched...]`、chat_id、session token 等）
+2. 穩定前綴（stable prefix）留在原本位置
+3. 動態內容統一搬到結尾 `[Dynamic Context: ...]` 區塊
+
+**目的：** 穩定 KV-cache 前綴，讓 Gemini（和 provider）在跨請求時能更好地命中 cache。動態內容每次都會變，但結構固定， Gemini 能快速定位差異。
+
+### 5.5 ContentRouter（可選，預設開啟）
+
+`enableContentRouter: true` 時，工具輸出不再使用簡單字數截斷，而是 `_compressToolOutput()` 依內容型態選擇策略：
+
+| 類型 | 策略 | 保留內容 |
+|------|------|---------|
+| `json-array` | 統計取樣（30%頭+15%尾+55%重要性） | 結構 + 異常值 |
+| `error-log` | Cluster by error family，保留一代表 | 錯誤行全部保留 |
+| `web-fetch` | Head+tail 截斷 | 文章主體 |
+| `plain` | 65%頭 + 25%尾，按行 split | 開頭結尾 |
+
+所有策略都有 fallback：若超出預算，最後一定退化回簡單截斷，不影響正確性。
 
 ---
 
@@ -222,8 +245,10 @@ isSameConversation(oldMsgs, newMsgs)?
   "prompt": {
     "maxTranscriptLength":    60000,
     "maxToolsSectionLength":   64000,
-    "maxToolOutputLength":     3000,
-    "enableMediaSendReminder": true
+    "maxToolOutputLength":     5000,
+    "enableMediaSendReminder": true,
+    "enableCacheAligner":      true,
+    "enableContentRouter":     true
   }
 }
 ```
@@ -240,6 +265,8 @@ isSameConversation(oldMsgs, newMsgs)?
 | `prompt.maxToolsSectionLength` | number | 工具清單總長上限（chars） |
 | `prompt.maxToolOutputLength` | number | 單次工具輸出截斷門檻（chars） |
 | `prompt.enableMediaSendReminder` | boolean | 是否注入媒體發送強制規範 |
+| `prompt.enableCacheAligner` | boolean | 是否開啟 CacheAligner，提取動態內容穩定前綴 |
+| `prompt.enableContentRouter` | boolean | 是否開啟 ContentRouter，類型感知工具輸出壓縮 |
 
 ---
 

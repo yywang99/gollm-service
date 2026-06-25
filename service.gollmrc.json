@@ -49,7 +49,7 @@
   "prompt": {
     "maxTranscriptLength": 60000,
     "maxToolsSectionLength": 64000,
-    "maxToolOutputLength": 3000,
+    "maxToolOutputLength": 5000,
     "enableMediaSendReminder": true
   }
 }
