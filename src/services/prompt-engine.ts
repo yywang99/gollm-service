@@ -66,8 +66,11 @@ export class PromptEngine {
     const contextFileNames = [
       "MEMORY.md", "USER.md", "AGENT.md", "CLAUDE.md", "WORKSPACE.md",
       "RULES.md", "SYSTEM.md", "PROFILE.md", "SOUL.md", "IDENTITY.md",
+      "IDENTIFY.md",
       "memory.md", "user.md", "agent.md", "soul.md", "identity.md",
+      "identify.md",
       "claude.md", "workspace.md", "rules.md", "agent", "soul", "identity",
+      "identify",
       // OpenClaw specific
       "AGENTS.md", "TOOLS.md",
     ];
