@@ -204,12 +204,17 @@ export class SessionManager {
 
     this.page = this.context.pages()[0] || (await this.context.newPage());
 
+    this.page.on("close", () => {
+      console.log("[SessionManager] Page closed/crashed. Closing context to force relaunch.");
+      this.context?.close().catch(() => {});
+    });
+
     this.context.on("close", () => {
-      console.log("[SessionManager] Browser context closed/crashed.");
+      console.log("[SessionManager] Browser context closed/crashed. Resetting session state.");
       this.context = null;
       this.page = null;
       this.browser = null;
-      this.state = "new";
+      this.resetState();
     });
 
     // Detect session state
