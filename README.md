@@ -24,7 +24,7 @@ npm run build && node dist/server/http-server.js
 **首次啟動：登入確認清單**
 
 ```
-1. 將 service.gollmrc.json 中的 playwright.headless 設為 false
+1. 確認 service.gollmrc.json 中的 playwright.headless 為 false（預設即為 false）
 2. 啟動服務：systemctl --user start gollm-service
 3. 確認瀏覽器已開啟：curl http://127.0.0.1:3001/health
    → 此時 status 應為 "degraded"，session 為 "new" 或 "needs_reauth"
@@ -115,6 +115,8 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 ```json
 {
   "status": "degraded",
+  "service": "gollm-service",
+  "version": "0.4.0",
   "session": "logged_in",   // new | logged_in | needs_reauth | crashed
   "browser": "unresponsive" // responsive | unresponsive
 }

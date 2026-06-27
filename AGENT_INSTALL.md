@@ -54,7 +54,7 @@ npx playwright install chromium
 
 ```bash
 [ ! -f service.gollmrc.json ] && cp config.example.json service.gollmrc.json
-# 編輯 service.gollmrc.json，將 playwright.headless 設為 false
+# 確認 service.gollmrc.json 中的 playwright.headless 為 false（預設即為 false）
 ```
 
 ### Step 5: 編譯專案

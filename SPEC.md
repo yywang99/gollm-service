@@ -171,23 +171,33 @@ isSameConversation(oldMsgs, newMsgs)?
 ```
 
 **isSameConversation 判定：**
-1. **主要**：從 system message 的 metadata JSON 中取 `chat_id`，比對雙方是否相同
-2. **Fallback**：比較 message role sequence（role 相同則視為同一對話）
+1. **主要**：從 system message 的 metadata JSON 中取 `chat_id`，比對雙方是否相同。
+2. **Fallback 預設對話 ID**：針對不提供 `chat_id` 的 Agent（如 smallHermes），若提取不到任何 ID，系統會自動分配為預設對話 ID `"default-session"`，以確保後續對話能被識別為同一個對話，自動啟動增量模式，避免每一輪對話都重新整理網頁。
+3. **結構 Fallback**：比較 message role sequence（role 相同則視為同一對話）。
 
-### 5.2 System Prompt 變更檢查
+### 5.2 System Prompt 變更與全域置頂
 
-即使 `chat_id` 不變，只要 system message 有實質變更（排除 `[Note: model was just switched...]` 這類瞬態註記），就會觸發 `requireNewChat: true`，確保新指示被正確套用。
+即使 `chat_id` 不變，只要有以下狀況，仍會採取對應策略：
 
-### 5.3 Metadata 剝離
+1. **System Prompt 全域置頂防裁切 (v0.4.0)**：以前 `systemText` 只有在歷史訊息 `selectedMessages` 循環中被保留時才會附帶。但當對話長度超過限額（`maxTranscriptLength`）時，位於最開頭的 `system` 訊息會第一個被裁切，導致人設、`MEMORY.md`、`AGENTS.md` 等完全遺失。在 v0.4.0 中，整個合併後的 System Prompt **被強制且固定置頂在整個 Prompt 的最前端**，完全不受歷史裁切影響。
+2. **動態內容 Diff 與重載 (v0.4.0)**：只要前後兩個請求的 System Prompt 內容有任何實質變更（例如：OpenClaw/Hermes 寫入記憶工具更新了 `MEMORY.md`、`AGENTS.md` 等檔案），系統會捕獲此變更（`systemPromptChanged === true`），自動將該請求判定為 `requireNewChat: true`，在網頁端重啟乾淨的對話視窗進行全量注入，確保新記憶即時生效。
+
+### 5.3 獨立臨時分頁路由 (v0.4.0)
+
+針對 Agent 的背景輔助/工具型請求（例如：Hermes 定期在背景發送的「對話標題生成（Title Generation）」或「摘要（Summarization）」API 呼叫，特徵為 System Prompt 長度小於 2000 字元且包含 `title`/`summarize`/`summary`），`gollm-service` 會**在背景開啟獨立的臨時分頁（Temporary Page）進行處理**。
+
+這能確保主對話所在的分頁不被跳轉或破壞，其網頁網址、聊天歷史與快取狀態能 100% 完整保留。當主線的下一次發問進來時，可以直接用增量模式瞬間發送，徹底解決了因背景 API 調用打斷主線快取的頻繁刷新問題。
+
+### 5.4 Metadata 剝離
 
 `cleanContent()` 會移除：
 - OpenClaw 格式：`Conversation info (untrusted metadata):\n\n\`\`\`json\n{...}\n\`\`\`\n`
 - Hermes 格式：`[Metadata]\n...`
 - 單行 header：`Conversation context (untrusted ...): ...`
 
-避免這些 metadata 進入 Gemini 污染 Prompt。
+避免這些 metadata 進入 Gemini 污染 Prompt。同時建立了對 `"IDENTIFY.md"`、`"identify.md"`、`"identify"` 等身份資訊檔案的保護白名單，避免其在剝離過程中被誤殺。
 
-### 5.4 CacheAligner（可選，預設開啟）
+### 5.5 CacheAligner（可選，預設開啟）
 
 `enableCacheAligner: true` 時，`formatTranscript()` 會對 system prompt 套用 `_extractDynamicContext()`：
 
@@ -197,7 +207,7 @@ isSameConversation(oldMsgs, newMsgs)?
 
 **目的：** 穩定 KV-cache 前綴，讓 Gemini（和 provider）在跨請求時能更好地命中 cache。動態內容每次都會變，但結構固定， Gemini 能快速定位差異。
 
-### 5.5 ContentRouter（可選，預設開啟）
+### 5.6 ContentRouter（可選，預設開啟）
 
 `enableContentRouter: true` 時，工具輸出不再使用簡單字數截斷，而是 `_compressToolOutput()` 依內容型態選擇策略：
 
@@ -356,4 +366,4 @@ isSameConversation(oldMsgs, newMsgs)?
 
 ---
 
-*Last updated: 2026-06-01*
+*Last updated: 2026-06-27 (v0.4.0)*
