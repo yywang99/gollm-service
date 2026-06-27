@@ -1,6 +1,6 @@
 {
   "name": "gollm-service",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Universal OpenAI-compatible LLM Microservice for OpenClaw & Hermes (Web Gemini RPA)",
   "type": "module",
   "main": "./dist/server/http-server.js",

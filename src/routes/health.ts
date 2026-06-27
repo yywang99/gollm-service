@@ -40,7 +40,7 @@ export async function healthRoute(fastify: FastifyInstance) {
     return {
       status: healthy ? "ok" : "degraded",
       service: "gollm-service",
-      version: "0.3.0",
+      version: "0.4.0",
       session: sessionState,
       browser: browserLaunched ? "responsive" : "unresponsive",
       uptime_seconds: Math.floor(uptimeMs / 1000),
