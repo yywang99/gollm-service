@@ -545,6 +545,10 @@ export class SessionManager {
     return this.state === "logged_in" && this.page !== null;
   }
 
+  getContext(): BrowserContext | null {
+    return this.context;
+  }
+
   async close(): Promise<void> {
     if (this.context) {
       await this.context.close();

@@ -304,6 +304,68 @@ export async function executeGollmRPA(
       userDataDir: playwrightConfig?.userDataDir,
     });
 
+    // Detect utility / title generation requests
+    const isTitleGen = messages.some((m: any) => 
+      m.role === 'system' && 
+      typeof m.content === 'string' && 
+      /title|summarize/i.test(m.content)
+    );
+
+    if (isTitleGen) {
+      log("[TitleGen] Detected conversation title generation request. Running on a temporary page...");
+      await session.getPage(); // Ensure browser is launched
+      const context = session.getContext();
+      if (!context) throw new Error("Browser context is not initialized");
+
+      const tempPage = await context.newPage();
+      try {
+        await tempPage.goto("https://gemini.google.com/app", { waitUntil: "domcontentloaded" });
+        await tempPage.waitForTimeout(2000);
+        
+        // Suppress overlays
+        await tempPage.evaluate(() => {
+          const win = globalThis as any;
+          const selectors = [
+            '.cdk-overlay-backdrop',
+            '.cdk-overlay-transparent-backdrop',
+            '.cdk-overlay-container',
+            '[class*="modal-backdrop"]',
+            '[class*="backdrop"][class*="show"]',
+            '[role="dialog"][aria-modal="true"]',
+          ];
+          const combined = selectors.join(',');
+          win.document.querySelectorAll(combined).forEach((el: any) => {
+            if (el.parentNode) el.parentNode.removeChild(el);
+          });
+        }).catch(() => {});
+
+        const promptText = promptEngine.formatTranscript(messages);
+        const baseline = await captureBaseline(tempPage);
+        
+        await typeInput(tempPage, promptText);
+        log(`[TitleGen] Typed prompt (${promptText.length} chars)`);
+        
+        await clickSend(tempPage);
+        log("[TitleGen] Sent prompt.");
+        
+        await tempPage.waitForTimeout(2000);
+        const result = await waitForStableResponse(tempPage, baseline);
+        
+        if (result.status === "timeout" || !result.text) {
+          log("[TitleGen] Response timeout.");
+          return { text: result.text || "", finishReason: "timeout" };
+        }
+        
+        log(`[TitleGen] Response received: ${result.text.trim()}`);
+        return {
+          text: result.text.trim(),
+          finishReason: "stop",
+        };
+      } finally {
+        await tempPage.close().catch(() => {});
+      }
+    }
+
     // Only reset session state when explicitly signalled (e.g., /new command).
     // This clears lastChatId so determinePromptStrategy sees isFirstRequest=true
     // and triggers full injection for the first message of a new conversation.
