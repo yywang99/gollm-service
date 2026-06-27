@@ -34,15 +34,21 @@ export class PromptEngine {
         .filter((p: any) => p.type === "text")
         .map((p: any) => {
           let partText = p.text || "";
-          partText = this._stripMetadataPreservingContext(partText);
+          // Only strip JSON metadata blocks, not plain text system content
+          if (partText.includes('"untrusted') || partText.includes('(untrusted')) {
+            partText = this._stripMetadataPreservingContext(partText);
+          }
           return partText;
         });
-      text = strippedParts.join("\\n");
+      text = strippedParts.join("\n");
     }
 
-    text = this._stripMetadataPreservingContext(text);
+    // Only strip metadata from content that looks like JSON metadata
+    if (text.includes('"untrusted') || text.includes('(untrusted')) {
+      text = this._stripMetadataPreservingContext(text);
+    }
     text = text.replace(/^\[Metadata\][^\n]*$/gim, '');
-    text = text.replace(/\n{3,}/g, '\\n\\n').trim();
+    text = text.replace(/\n{3,}/g, '\n\n').trim();
 
     return text;
   }
@@ -61,7 +67,9 @@ export class PromptEngine {
       "MEMORY.md", "USER.md", "AGENT.md", "CLAUDE.md", "WORKSPACE.md",
       "RULES.md", "SYSTEM.md", "PROFILE.md", "SOUL.md", "IDENTITY.md",
       "memory.md", "user.md", "agent.md", "soul.md", "identity.md",
-      "claude.md", "workspace.md", "rules.md", "agent", "soul", "identity"
+      "claude.md", "workspace.md", "rules.md", "agent", "soul", "identity",
+      // OpenClaw specific
+      "AGENTS.md", "TOOLS.md",
     ];
 
     text = text.replace(jsonBlockPat, (match, _prefix, _codeOpen, jsonBody, _codeClose) => {
@@ -225,21 +233,22 @@ export class PromptEngine {
     const log = (msg: string) => console.log(`[formatTranscript] ${msg}`);
     log(`IN: ${messages.length} msgs, tools=${tools?.length ?? 0}`);
 
-    const systemMsg = messages.find((m: any) => m.role === 'system');
-    const rawContent = systemMsg ? (typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content)) : '';
-    if (rawContent.includes('memory') || rawContent.includes('user') || rawContent.includes('MEMORY') || rawContent.includes('SOUL')) {
-      console.log('[DEBUG raw system content PREVIEW]:', rawContent.substring(0, 800));
-    }
-    const systemText = systemMsg ? this.cleanContent(systemMsg.content) : '';
+    // Collect ALL system messages, not just the first one
+    const systemMsgs = messages.filter((m: any) => m.role === 'system');
+    const rawContent = systemMsgs.length > 0
+      ? systemMsgs.map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n\n')
+      : '';
+
+    // Combine all system messages into one
+    const systemText = systemMsgs.map((m: any) => this.cleanContent(m.content)).filter(Boolean).join('\n\n');
+    log(`system msgs found=${systemMsgs.length}, cleanedLen=${systemText.length}`);
 
     // ── [CacheAligner] Extract dynamic content → stable prefix + dynamic tail
-    // This lets provider KV caches hit on the stable part across requests.
     let dynamicTail = '';
     if (this._limits.enableCacheAligner && systemText) {
       const aligned = this._extractDynamicContext(systemText);
       dynamicTail = aligned.dynamicTail;
     }
-    log(`system msg found=${!!systemMsg}, cleanedLen=${systemText.length}, dynamicItems=${dynamicTail ? 'yes' : 'none'}`);
 
     let transcript = "";
 
@@ -280,13 +289,19 @@ export class PromptEngine {
 
       // ── [Media Sending Reminder] Prevent hallucinated "photo sent" claims ─────
       if (this._limits.enableMediaSendReminder) {
-        transcript += `[Critical: How to Send Images/Media]\\n`;
-        transcript += `When sending images or files, you MUST use the MEDIA: prefix with a LOCAL ABSOLUTE PATH.\\n`;
-        transcript += `Example correct: In a send_message tool call, use "MEDIA:/home/yywang/.hermes/image_cache/photo.jpg"\\n`;
-        transcript += `NEVER claim "photo sent" or "image delivered" without actually outputting a valid tool_call.\\n`;
-        transcript += `NEVER use an external HTTP URL (e.g. Bing URL) as the media path — Telegram cannot fetch it.\\n`;
-        transcript += `If no local file exists, you MUST first use a tool to download/save the image, then send it.\\n\\n`;
+        transcript += `[Critical: How to Send Images/Media]\n`;
+        transcript += `When sending images or files, you MUST use the MEDIA: prefix with a LOCAL ABSOLUTE PATH.\n`;
+        transcript += `Example correct: In a send_message tool call, use "MEDIA:/path/to/your/image_cache/photo.jpg"\n`;
+        transcript += `NEVER claim "photo sent" or "image delivered" without actually outputting a valid tool_call.\n`;
+        transcript += `NEVER use an external HTTP URL (e.g. Bing URL) as the media path — Telegram cannot fetch it.\n`;
+        transcript += `If no local file exists, you MUST first use a tool to download/save the image, then send it.\n\n`;
       }
+
+      // ── [Identity Verification Reminder] Prevent hallucinated identity ─────
+      transcript += `[Identity Verification]\n`;
+      transcript += `If you catch yourself about to say you are "Gemini", "Claude", or any other AI model, or if you are unsure of your identity, you MUST call a tool to look up your identity definition.\n`;
+      transcript += `Use memory_search or similar tools to find: "Who am I? What is my name and persona?"\n`;
+      transcript += `Read the results and introduce yourself based on what you find.\n\n`;
     }
 
     // ── [Message Selection] Trim oldest messages to fit within context limit ───
@@ -313,7 +328,7 @@ export class PromptEngine {
       if (!text && !hasToolCalls) continue;
 
       if (msg.role === "system") {
-        const aligned = this._limits.enableCacheAligner && systemMsg
+        const aligned = this._limits.enableCacheAligner && systemText
           ? this._extractDynamicContext(systemText)
           : { stable: systemText, dynamicTail: '' };
         transcript += `========== SYSTEM INSTRUCTIONS ==========\\n${aligned.stable}${aligned.dynamicTail}\\n\\n`;
