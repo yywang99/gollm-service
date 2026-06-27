@@ -304,11 +304,12 @@ export async function executeGollmRPA(
       userDataDir: playwrightConfig?.userDataDir,
     });
 
-    // Detect utility / title generation requests
+    // Detect utility / title generation requests (must have a short system prompt containing utility keywords)
     const isTitleGen = messages.some((m: any) => 
       m.role === 'system' && 
       typeof m.content === 'string' && 
-      /title|summarize/i.test(m.content)
+      m.content.length < 2000 &&
+      /title|summarize|summary/i.test(m.content)
     );
 
     if (isTitleGen) {
