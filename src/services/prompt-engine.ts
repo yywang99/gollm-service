@@ -254,17 +254,16 @@ export class PromptEngine {
 
     if (tools && tools.length > 0) {
       // ── [URL Handling] Prevent Gemini from timing out on GitHub URLs ─────────
-      transcript += `[Important: URL Handling]\\n`;
-      transcript += `When you encounter a URL in the user's message (especially GitHub URLs), do NOT attempt to process it yourself.\\n`;
-      transcript += `You MUST use the web_fetch tool to retrieve the content first, then analyze the fetched content.\\n`;
-      transcript += `IMPORTANT: Output ONLY the tool_call block without any explanatory text or preamble.\\n`;
-      transcript += `Example correct response: <tool_call>\\n{"name": "web_fetch", "arguments": {"url": "https://github.com/..."}}\\n</tool_call>\\n`;
-      transcript += `Example WRONG response: "Let me fetch that URL for you..." <tool_call>...\\n</tool_call>\\n\\n`;
+      transcript += `[Important: URL Handling]\n`;
+      transcript += `When you encounter a URL in the user's message (especially GitHub URLs), do NOT attempt to process it yourself.\n`;
+      transcript += `You MUST use the web_fetch tool to retrieve the content first, then analyze the fetched content.\n`;
+      transcript += `IMPORTANT: Output ONLY the tool_call block without any explanatory text or preamble.\n`;
+      transcript += `Example correct response: <tool_call>\n{"name": "web_fetch", "arguments": {"url": "https://github.com/..."}}\n</tool_call>\n\n`;
 
       // ── [Tools] ───────────────────────────────────────────────────────────────
-      transcript += `[System Instructions - Available Tools]\\n`;
-      transcript += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\\n`;
-      transcript += `<tool_call>\\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\\n</tool_call>\\n\\n`;
+      transcript += `[System Instructions - Available Tools]\n`;
+      transcript += `You have access to the following tools. To use a tool, you MUST output a <tool_call> JSON block EXACTLY like this:\n`;
+      transcript += `<tool_call>\n{"name": "tool_name", "arguments": {"arg1": "value1"}}\n</tool_call>\n\n`;
 
       const includedTools = [];
       let currentToolsLen = 0;
@@ -280,12 +279,12 @@ export class PromptEngine {
       }
 
       let toolsJson = JSON.stringify(includedTools, null, 2);
-            const remaining = tools.length - includedTools.length;
-            if (remaining > 0) {
-              toolsJson += `\n// ... ${remaining} more tools available (not shown for context limit)`;
-            }
+      const remaining = tools.length - includedTools.length;
+      if (remaining > 0) {
+        toolsJson += `\n// ... ${remaining} more tools available (not shown for context limit)`;
+      }
 
-      transcript += `Available Tools:\\n${toolsJson}\\n\\n`;
+      transcript += `Available Tools:\n${toolsJson}\n\n`;
 
       // ── [Media Sending Reminder] Prevent hallucinated "photo sent" claims ─────
       if (this._limits.enableMediaSendReminder) {
@@ -304,6 +303,14 @@ export class PromptEngine {
       transcript += `Read the results and introduce yourself based on what you find.\n\n`;
     }
 
+    // Prepend the combined system instructions at the top
+    if (systemText) {
+      const aligned = this._limits.enableCacheAligner
+        ? this._extractDynamicContext(systemText)
+        : { stable: systemText, dynamicTail: '' };
+      transcript += `========== SYSTEM INSTRUCTIONS ==========\n${aligned.stable}${aligned.dynamicTail}\n\n`;
+    }
+
     // ── [Message Selection] Trim oldest messages to fit within context limit ───
     const selectedMessages: any[] = [];
     let currentLength = transcript.length;
@@ -311,6 +318,7 @@ export class PromptEngine {
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
+      if (msg.role === "system") continue; // Skip system messages here since they are already merged at the top!
       const text = this.cleanContent(msg.content);
       const hasToolCalls = !!(msg.tool_calls && msg.tool_calls.length > 0);
       const addedLen = (text ? text.length : 0) + 50;
@@ -328,26 +336,23 @@ export class PromptEngine {
       if (!text && !hasToolCalls) continue;
 
       if (msg.role === "system") {
-        const aligned = this._limits.enableCacheAligner && systemText
-          ? this._extractDynamicContext(systemText)
-          : { stable: systemText, dynamicTail: '' };
-        transcript += `========== SYSTEM INSTRUCTIONS ==========\\n${aligned.stable}${aligned.dynamicTail}\\n\\n`;
+        continue; // Skip system messages since they are already merged at the top
       } else if (msg.role === "user") {
-        transcript += `--- User ---\\n${text}\\n\\n`;
+        transcript += `--- User ---\n${text}\n\n`;
       } else if (msg.role === "assistant") {
         if (hasToolCalls) {
-          transcript += `--- Assistant ---\\n`;
-          if (text) transcript += `${text}\\n`;
+          transcript += `--- Assistant ---\n`;
+          if (text) transcript += `${text}\n`;
           for (const tc of msg.tool_calls!) {
             const origName = tc.function.name.replace(/__/g, ':');
             const args = typeof tc.function.arguments === 'string'
               ? tc.function.arguments
               : JSON.stringify(tc.function.arguments);
-            transcript += `<tool_call>\\n{"name": "${origName}", "arguments": ${args}}\\n</tool_call>\\n`;
+            transcript += `<tool_call>\n{"name": "${origName}", "arguments": ${args}}\n</tool_call>\n`;
           }
-          transcript += `\\n`;
+          transcript += `\n`;
         } else {
-          transcript += `--- Assistant ---\\n${text}\\n\\n`;
+          transcript += `--- Assistant ---\n${text}\n\n`;
         }
       } else if (msg.role === "tool" || msg.role === "function") {
         const toolName = (msg.name || msg.tool_call_id || "tool").replace(/__/g, ':');
@@ -355,17 +360,17 @@ export class PromptEngine {
         const rawText = text;
         const compressedText = this._limits.enableContentRouter
           ? this._compressToolOutput(rawText, toolName, maxToolOutput)
-          : (rawText.length > maxToolOutput ? rawText.slice(0, maxToolOutput) + `\\n... [truncated ${rawText.length - maxToolOutput} chars]` : rawText);
-        transcript += `--- Tool Output (${toolName}) ---\\n${compressedText}\\n\\n`;
+          : (rawText.length > maxToolOutput ? rawText.slice(0, maxToolOutput) + `\n... [truncated ${rawText.length - maxToolOutput} chars]` : rawText);
+        transcript += `--- Tool Output (${toolName}) ---\n${compressedText}\n\n`;
       }
     }
 
     const lastRole = messages.length > 0 ? messages[messages.length - 1].role : "";
     if (lastRole === "user" || lastRole === "tool" || lastRole === "function") {
       if (tools && tools.length > 0) {
-        transcript += `\\n[System Instruction]: Remember, you must use the <tool_call> format for all tool calls. Do not describe your tool call or output any preamble before the tool call.\\n`;
+        transcript += `\n[System Instruction]: Remember, you must use the <tool_call> format for all tool calls. Do not describe your tool call or output any preamble before the tool call.\n`;
       }
-      transcript += `[Assistant]:\\n`;
+      transcript += `[Assistant]:\n`;
     }
 
     const result = transcript.trim();
@@ -712,20 +717,29 @@ private _compressPlainText(text: string, maxLen: number): string {
     const hasNewCommand = /\b\/new\b/i.test(lastUserText);
     // Signal B: No prior chat_id stored → first request ever or session was reset
     const isFirstRequest = oldChatId === null;
-    console.log(`[DEBUG determinePromptStrategy] newChatId=${newChatId}, oldChatId=${oldChatId}, isFirstRequest=${isFirstRequest}`);
+    
     // Signal C: chat_id changed → different conversation thread
     const chatIdChanged = !isFirstRequest && newChatId !== null && newChatId !== oldChatId;
 
-    const needFullInjection = hasNewCommand || isFirstRequest || chatIdChanged;
+    // Signal D: system prompt changed → reload required (e.g. MEMORY.md, AGENTS.md modified)
+    const oldMsgs = session.getLastProcessedMessages() || [];
+    const oldSystemMsgs = oldMsgs.filter((m: any) => m.role === 'system');
+    const newSystemMsgs = messages.filter((m: any) => m.role === 'system');
+    const oldSystemText = oldSystemMsgs.map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n\n');
+    const newSystemText = newSystemMsgs.map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n\n');
+    const systemPromptChanged = !isFirstRequest && oldSystemText !== newSystemText;
+
+    console.log(`[DEBUG determinePromptStrategy] newChatId=${newChatId}, oldChatId=${oldChatId}, isFirstRequest=${isFirstRequest}, chatIdChanged=${chatIdChanged}, systemPromptChanged=${systemPromptChanged}`);
+
+    const needFullInjection = hasNewCommand || isFirstRequest || chatIdChanged || systemPromptChanged;
 
     if (needFullInjection) {
-      console.log(`[PromptEngine] Full injection (newCmd=${hasNewCommand}, first=${isFirstRequest}, chatIdChanged=${chatIdChanged})`);
+      console.log(`[PromptEngine] Full injection (newCmd=${hasNewCommand}, first=${isFirstRequest}, chatIdChanged=${chatIdChanged}, sysPromptChanged=${systemPromptChanged})`);
       session.setLastChatId(newChatId);
       return { text: this.formatTranscript(messages, tools), requireNewChat: true };
     }
 
     // ── Step 3: Incremental — diff messages to find new updates ──────────────
-    const oldMsgs = session.getLastProcessedMessages() || [];
     if (this.isSameConversation(oldMsgs, messages)) {
       const newMsgs = this.getNewMessages(oldMsgs, messages);
       const newText = this.formatIncrementalPrompt(newMsgs, tools);
