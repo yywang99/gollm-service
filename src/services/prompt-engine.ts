@@ -708,6 +708,10 @@ private _compressPlainText(text: string, maxLen: number): string {
         }
       }
     }
+
+    if (!newChatId) {
+      newChatId = "default-session";
+    }
     const oldChatId = session.getLastChatId();
 
     // ── Step 2: Detect explicit NEW CHAT signals ─────────────────────────────
