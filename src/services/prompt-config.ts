@@ -2,8 +2,8 @@
  * Prompt Config Loader
  *
  * Centralizes all PromptEngine limits and behaviour flags.
- * Values are driven by service.gollmrc.json → config.prompt, with safe
- * defaults so the service still works if the config key is absent.
+ * Values are driven by service.gollmrc.json -> config.prompt and config.polling, with safe
+ * defaults so the service still works if the config keys are absent.
  */
 
 export interface PromptLimits {
@@ -17,6 +17,10 @@ export interface PromptLimits {
   enableContentRouter: boolean;      // default true
   // ── OutputHint: steering block to reduce output tokens ────────────────────
   enableOutputHint: number;          // 0=off, 1=L1, 2=L2 (default), 3=L3, 4=L4
+  // ── Polling: response extraction timing settings ─────────────────────────
+  pollIntervalMs: number;            // DOM polling interval (ms)
+  stableThreshold: number;           // consecutive stable polls to consider done
+  postGenerationBufferMs: number;    // extra wait after generation stops (ms)
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -28,6 +32,10 @@ const DEFAULTS: PromptLimits = {
   enableCacheAligner:       true,  // extract dynamic vars → stable KV-cache prefix
   enableContentRouter:      true,  // type-aware tool-output compression
   enableOutputHint:            2,  // L2: concise + no echo (safe default)
+  // Polling defaults (can be overridden via service.gollmrc.json -> polling)
+  pollIntervalMs:         300,   // 0.3s between DOM checks
+  stableThreshold:          8,   // need 8 consecutive stable reads
+  postGenerationBufferMs: 2000,  // 2s extra wait after stop button disappears
 };
 
 // ── Module-level store (lazily populated, can be overridden) ─────────────────
@@ -47,32 +55,22 @@ export function getPromptLimits(): PromptLimits {
  * Idempotent — safe to call multiple times; later calls win.
  */
 export function initPromptConfig(rcConfig?: Record<string, unknown> | null): void {
-  const cfg = (rcConfig?.prompt ?? {}) as Partial<PromptLimits>;
+  const promptConfig = rcConfig?.prompt ?? {};
+  const pollingConfig = rcConfig?.polling ?? {};
 
   _limits = {
-    maxTranscriptLength:    Number(cfg.maxTranscriptLength)    || DEFAULTS.maxTranscriptLength,
-    maxToolsSectionLength:  Number(cfg.maxToolsSectionLength)  || DEFAULTS.maxToolsSectionLength,
-    maxToolOutputLength:     Number(cfg.maxToolOutputLength)    || DEFAULTS.maxToolOutputLength,
-    enableMediaSendReminder: cfg.enableMediaSendReminder !== undefined
-      ? Boolean(cfg.enableMediaSendReminder)
-      : DEFAULTS.enableMediaSendReminder,
-    enableCacheAligner: cfg.enableCacheAligner !== undefined
-      ? Boolean(cfg.enableCacheAligner)
-      : DEFAULTS.enableCacheAligner,
-    enableContentRouter: cfg.enableContentRouter !== undefined
-      ? Boolean(cfg.enableContentRouter)
-      : DEFAULTS.enableContentRouter,
-    enableOutputHint: cfg.enableOutputHint !== undefined
-      ? Number(cfg.enableOutputHint)
-      : DEFAULTS.enableOutputHint,
-  };
+    ...DEFAULTS,
+    ...promptConfig,
+    ...pollingConfig,
+  } as PromptLimits;
 
   _initialized = true;
-  console.log(`[PromptConfig] limits loaded: transcript≤${_limits.maxTranscriptLength}, `
-    + `tools≤${_limits.maxToolsSectionLength}, toolOutput≤${_limits.maxToolOutputLength}, `
-    + `mediaReminder=${_limits.enableMediaSendReminder}, `
-    + `cacheAligner=${_limits.enableCacheAligner}, contentRouter=${_limits.enableContentRouter}, `
-    + `outputHint=L${_limits.enableOutputHint}`);
+  console.log(`[PollConfig] polling: interval=${_limits.pollIntervalMs}ms, stable=${_limits.stableThreshold}, postGenBuf=${_limits.postGenerationBufferMs}ms`);
+  console.log(`[PromptConfig] limits loaded: transcript≤${_limits.maxTranscriptLength}, ` +
+    `tools≤${_limits.maxToolsSectionLength}, toolOutput≤${_limits.maxToolOutputLength}, ` +
+    `mediaReminder=${_limits.enableMediaSendReminder}, ` +
+    `cacheAligner=${_limits.enableCacheAligner}, contentRouter=${_limits.enableContentRouter}, ` +
+    `outputHint=L${_limits.enableOutputHint}`);
 }
 
 /** Returns true after init() has been called at least once. */

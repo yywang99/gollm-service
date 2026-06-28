@@ -7,7 +7,8 @@
 
 import { type Page } from "playwright";
 import { SELECTORS } from "../utils/selectors.js";
-import { POLLING, LIMITS } from "../utils/timings.js";
+import { LIMITS } from "../utils/timings.js";
+import { getPromptLimits } from "../services/prompt-config.js";
 
 // ── Paragraph Break Restoration ──────────────────────────────────────
 // textContent merges <p>A</p><p>B</p> into one string with no \n.
@@ -186,10 +187,11 @@ export async function waitForStableResponse(
   page: Page,
   baselineText: string
 ): Promise<WaitForResponseResult> {
+  const limits = getPromptLimits();
   const timeoutMs = LIMITS.RESPONSE_TIMEOUT_MS;
-  const pollMs = POLLING.POLL_INTERVAL_MS;
-  const stableThreshold = POLLING.STABLE_THRESHOLD;
-  const postGenBufferMs = POLLING.POST_GENERATION_BUFFER_MS;
+  const pollMs = limits.pollIntervalMs;
+  const stableThreshold = limits.stableThreshold;
+  const postGenBufferMs = limits.postGenerationBufferMs;
 
   console.log(`[POLL] Starting (timeout=${timeoutMs}ms, poll=${pollMs}ms, stable=${stableThreshold}, postGenBuffer=${postGenBufferMs}ms)`);
 

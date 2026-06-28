@@ -46,6 +46,11 @@
     "stableThreshold": 10,
     "maxRetries": 3
   },
+  "polling": {
+    "pollIntervalMs": 300,
+    "stableThreshold": 8,
+    "postGenerationBufferMs": 2000
+  },
   "prompt": {
     "maxTranscriptLength": 50000,
     "maxToolsSectionLength": 64000,
