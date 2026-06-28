@@ -325,6 +325,41 @@ isSameConversation(oldMsgs, newMsgs)?
 
 ---
 
+### Q: 為什麼回覆這麼慢？如何最佳化延遲？（2026-06-28 更新）
+**A:** 響應延遲主要瓶頸在 `src/utils/timings.ts` 的輪詢參數。完整的等待鏈：
+
+```
+打字輸入延遲 (INPUT_DELAY: 200ms)
+  → 等待按鈕就緒 (SEND_RETRY_DELAY: 500ms)
+  → Gemini 生成回覆（網路+模型速度）
+  → Gemini 停止生成（stop button 消失）
+  → POST_GENERATION_BUFFER (等待 DOM 渲染穩定)
+  → 連續 STABLE_THRESHOLD 次 poll
+  → 擷取回覆
+```
+
+**2026-06-28 效能調校參數：**
+
+| 參數 | 原始值 | 調整後 | 節省 |
+|------|--------|--------|------|
+| `POST_GENERATION_BUFFER_MS` | 8000ms | 2000ms | -6s |
+| `STABLE_THRESHOLD` | 15 | 8 | -3.5s |
+| `POLL_INTERVAL_MS` | 500ms | 300ms | -3.5s |
+| `maxTranscriptLength` | 60000 | 50000 | 更少 DOM 處理 |
+| `maxToolOutputLength` | 3000 | 5000 | 減少截斷重試 |
+
+> ⚠️ 降低 `POST_GENERATION_BUFFER_MS` 和 `STABLE_THRESHOLD` 可能在網速慢或回覆包含大量程式碼/工具輸出時，造成回覆被截斷。如遇此情況，請將這兩個參數逐步調回較高數值，直到穩定為止。
+
+調整方式（直接修改原始碼）：
+```bash
+vim src/utils/timings.ts
+# 修改 POLLING 物件中的數值
+npm run build
+systemctl --user restart gollm-service
+```
+
+---
+
 ## 9. 安全性考量
 
 - **Session Cookie**：存放在 `playwright.userDataDir`，應設定適當的檔案權限（建議 `chmod 700`）。
@@ -362,7 +397,7 @@ isSameConversation(oldMsgs, newMsgs)?
 | 工具太多，常常被截斷 | `maxToolsSectionLength` 調大至 80000，代價是 Prompt 更長 |
 | 需要傳送圖片但模型假裝發送 | 確認 `enableMediaSendReminder: true`，並檢查 SPEC §3.3 |
 | 想減少 token 消耗 | `maxTranscriptLength` 調低至 40000（但可能遺漏早期對話資訊）|
-| 瀏覽器響應很慢 | `pollIntervalMs` 從 500 增至 1000，降低 CPU 負擔 |
+| 瀏覽器響應很慢 | `POLLING.POLL_INTERVAL_MS` 從 300 增至 800，降低 CPU 負擔（代價：更長的回覆偵測時間） |
 
 ---
 
