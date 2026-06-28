@@ -1,6 +1,6 @@
 /**
  * Tool Parser Utility
- * 
+ *
  * Extracts tool calls from Gemini's Markdown response and converts them
  * to OpenAI-compatible tool_calls objects.
  */
@@ -11,6 +11,8 @@ import {
   hasRefusalClaim,
   DEFAULT_PATTERNS,
 } from "./hallucination-patterns.js";
+import { jsonrepair } from "jsonrepair";
+import JSON5 from "json5";
 
 export interface ParsedToolCall {
   id: string;
@@ -29,22 +31,25 @@ export interface HallucinationResult {
 
 /**
  * 核心解決方案：清洗 Gemini Web UI 強制渲染的 Markdown 代碼塊
- * 並還原被轉義的 HTML 實體字元（防止網頁端把 < 改成 &lt;）
+ * 並還原被轉義的 HTML 實體字元（防止網頁端把 < 改成 <）
  */
 function sanitizeWebRpaOutput(rawText: string): string {
-  if (!rawText) return '';
+  if (!rawText) return "";
 
   // 1. 移除可能包裹在最外層的代碼塊標籤，只保留內部核心
-  let cleaned = rawText.replace(/```(?:xml|json|html|javascript|ts|js|bash|sh|text)?\s*([\s\S]*?)\s*```/gi, '$1');
-  
+  let cleaned = rawText.replace(
+    /```(?:xml|json|html|javascript|ts|js|bash|sh|text)?\s*([\s\S]*?)\s*```/gi,
+    "$1"
+  );
+
   // 移除剩餘的懸空反引號
-  cleaned = cleaned.replace(/```/g, '');
+  cleaned = cleaned.replace(/```/g, "");
 
   // 2. 拔除可能被轉義的 HTML 實體字元
   cleaned = cleaned
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&amp;/g, '&');
+    .replace(/</g, "<")
+    .replace(/>/g, ">")
+    .replace(/&/g, "&");
 
   return cleaned.trim();
 }
@@ -55,10 +60,10 @@ function sanitizeWebRpaOutput(rawText: string): string {
  */
 export function parseToolCalls(rawText: string): ParsedToolCall[] {
   const toolCalls: ParsedToolCall[] = [];
-  
+
   // 進入解析前，先脫掉 Markdown 的糖衣外殼與 HTML 轉義
   const text = sanitizeWebRpaOutput(rawText);
-  
+
   // Pattern 1: Legacy OpenClaw/Hermes XML format <call:domain:method>{args}</call>
   const callPattern = /<call:([\w:-]+)>([\s\S]*?)<\/call>/g;
   let match;
@@ -69,55 +74,147 @@ export function parseToolCalls(rawText: string): ParsedToolCall[] {
       id: `call_${Math.random().toString(36).substring(2, 11)}`,
       type: "function",
       function: {
-        name: fullMethod.replace(/:/g, '__'), // Convert to OpenAI safe name if needed
-        arguments: argsStr
-      }
+        name: fullMethod.replace(/:/g, "__"), // Convert to OpenAI safe name if needed
+        arguments: argsStr,
+      },
     });
   }
 
   // Pattern 2: Standard Hermes <tool_call> JSON block format
+  // Use layered recovery because Gemini's web UI often produces malformed JSON:
+  // 1. JSON.parse       — fastest, handles well-formed JSON
+  // 2. jsonrepair       — fixes embedded unescaped quotes, missing commas
+  // 3. JSON5.parse      — handles single quotes, trailing commas, comments
+  // 4. targeted extract — handles edge cases where all above fail
   const toolCallPattern = /<tool_call>([\s\S]*?)<\/tool_call>/g;
   while ((match = toolCallPattern.exec(text)) !== null) {
-    try {
-      // The content inside <tool_call> should be a JSON object: {"name": "...", "arguments": {...}}
-      const jsonStr = match[1].trim();
-      const parsed = JSON.parse(jsonStr);
-      if (parsed.name) {
-        toolCalls.push({
-          id: `call_${Math.random().toString(36).substring(2, 11)}`,
-          type: "function",
-          function: {
-            name: parsed.name.replace(/:/g, '__'),
-            // if arguments is an object, stringify it (OpenAI expects stringified JSON)
-            arguments: typeof parsed.arguments === 'object' ? JSON.stringify(parsed.arguments) : (parsed.arguments || "{}")
-          }
-        });
+    const jsonStr = match[1].trim();
+    let parsed: Record<string, unknown> | null = null;
+
+    for (const parseAttempt of [
+      () => JSON.parse(jsonStr),
+      () => JSON.parse(jsonrepair(jsonStr)),
+      () => JSON5.parse(jsonStr) as unknown,
+      () => extractMalformedToolCall(jsonStr),
+    ]) {
+      try {
+        const result = parseAttempt() as Record<string, unknown>;
+        if (result && typeof result === "object" && "name" in result) {
+          parsed = result;
+          break;
+        }
+      } catch {
+        // try next method
       }
-    } catch (e) {
-      console.warn("[GoLLM Parser] Failed to parse <tool_call> JSON:", e);
+    }
+
+    if (parsed) {
+      toolCalls.push({
+        id: `call_${Math.random().toString(36).substring(2, 11)}`,
+        type: "function",
+        function: {
+          name: String(parsed.name).replace(/:/g, "__"),
+          arguments:
+            typeof parsed.arguments === "object"
+              ? JSON.stringify(parsed.arguments)
+              : String(parsed.arguments || "{}"),
+        },
+      });
+    }
+    // else: couldn't extract — silently skip; gollm-service will fall back to text response
+  }
+
+  return toolCalls;
+}
+
+/**
+ * Last-resort extractor for severely malformed <tool_call> JSON where
+ * all standard parsers (JSON.parse, jsonrepair, JSON5) fail.
+ * Handles the worst cases: deeply embedded unescaped quotes in command strings.
+ *
+ * Strategy: extract `name` and `arguments` separately via targeted regex/brute-force,
+ * then parse each piece individually.
+ */
+function extractMalformedToolCall(jsonStr: string): Record<string, unknown> | null {
+  // Extract "name" — simple scalar, never has embedded quotes in practice
+  const nameMatch = /"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/.exec(jsonStr);
+  if (!nameMatch) return null;
+
+  const argsStartIdx = jsonStr.indexOf('"arguments"');
+  if (argsStartIdx < 0) return null;
+
+  // Walk from "arguments" to find the opening brace of the value
+  let braceStart = -1;
+  let depth = 0;
+  let i = argsStartIdx + '"arguments"'.length;
+  while (i < jsonStr.length) {
+    const ch = jsonStr[i];
+    if (ch === ":") {
+      i++;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      braceStart = i;
+      depth = 1;
+      i++;
+      break;
+    }
+    i++;
+  }
+  if (braceStart < 0) return null;
+
+  // Walk forward counting braces to find the matching close
+  let j = braceStart + 1;
+  while (j < jsonStr.length && depth > 0) {
+    const ch = jsonStr[j];
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    j++;
+  }
+  const argsJson = jsonStr.slice(braceStart, j);
+
+  // Try jsonrepair → JSON5 → JSON.parse on the arguments object
+  let argsObj: unknown = {};
+  for (const parser of [
+    (s: string) => JSON.parse(jsonrepair(s)),
+    JSON5.parse,
+    JSON.parse,
+  ]) {
+    try {
+      argsObj = parser(argsJson);
+      break;
+    } catch {
+      // try next
     }
   }
-  
-  return toolCalls;
+
+  return { name: nameMatch[1], arguments: argsObj };
 }
 
 /**
  * Checks if the text should be treated as a pure tool call response.
  * If true, the 'content' field in OpenAI response should be null.
  */
-export function isPureToolCall(text: string, toolCalls: ParsedToolCall[]): boolean {
+export function isPureToolCall(
+  text: string,
+  toolCalls: ParsedToolCall[]
+): boolean {
   if (toolCalls.length === 0) return false;
-  
+
   // Clean markdown and HTML escaping first
   const sanitized = sanitizeWebRpaOutput(text);
 
   // Remove ALL tool call tags to see if any actual conversational text remains
   const cleaned = sanitized
-    .replace(/<call:[\s\S]*?<\/call>/g, '')
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
-    .replace(/<invoke>[\s\S]*?<\/invoke>/g, '')
+    .replace(/<call:[\s\S]*?<\/call>/g, "")
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+    .replace(/<invoke>[\s\S]*?<\/invoke>/g, "")
     .trim();
-    
+
   return cleaned.length < 20; // Allow for some small boilerplate like "OK." or "Sure."
 }
 
@@ -128,68 +225,52 @@ export function isPureToolCall(text: string, toolCalls: ParsedToolCall[]): boole
 export function isNoReply(text: string): boolean {
   // If the text ends with NO_REPLY (ignoring trailing whitespace)
   if (/NO_REPLY\s*$/.test(text)) return true;
-  
+
   // If the text contains NO_REPLY and everything after it is just whitespace
   const sanitized = sanitizeWebRpaOutput(text);
-  if (/NO_REPLY\s*$/.test(sanitized)) return true;
+  const noReplyIdx = sanitized.indexOf("NO_REPLY");
+  if (noReplyIdx !== -1) {
+    const after = sanitized.slice(noReplyIdx + "NO_REPLY".length).trim();
+    return after.length === 0;
+  }
 
   return false;
 }
 
 /**
- * Detects if a response is a hallucination or refusal.
- * 
- * A hallucination/refusal occurs when:
- * 1. The response claims completion (e.g. "I already modified the file")
- *    but did NOT include any tool call tags
- * 2. The response has file modification intent (user asked to modify a file)
- *    AND the model claims completion without an action
- * 3. The response refuses to execute the task (e.g. "I am an AI and cannot run commands")
- * 
- * @param text - The raw response text from Gemini
- * @param toolCalls - Parsed tool calls from the same response
- * @returns HallucinationResult with isHallucination flag and reason
+ * Detects common LLM refusal patterns to help filter out hallucinated tool calls.
+ * Returns HallucinationResult with details about why it was flagged.
  */
 export function detectHallucination(
   text: string,
   toolCalls: ParsedToolCall[]
 ): HallucinationResult {
-  // No hallucination if we have valid tool calls
-  if (toolCalls.length > 0) {
-    return { isHallucination: false };
+  const sanitized = sanitizeWebRpaOutput(text);
+
+  for (const pattern of Object.values(DEFAULT_PATTERNS).flat()) {
+    if (pattern.test(sanitized)) {
+      return {
+        isHallucination: true,
+        reason: pattern.message,
+        matchedPattern: pattern.name,
+      };
+    }
   }
 
-  const completionClaim = hasCompletionClaim(text, DEFAULT_PATTERNS.completionClaims);
-  const fileIntent = hasFileModificationIntent(text, DEFAULT_PATTERNS.fileModificationIntent);
-  const refusalClaim = hasRefusalClaim(text, DEFAULT_PATTERNS.refusalClaims);
-
-  // Case 1: Refusal
-  if (refusalClaim) {
+  // Legacy fallback check: "I've attached" + file path without actual tool call
+  const hasAttachedMention = /\b(attached|appended|added|written|created)\b.*\.(json|yaml|yml|sh|bash|py|ts|js|md|txt)/i.test(text);
+  const hasToolCall =
+    toolCalls.length > 0 ||
+    /<call:|<\/call>|<tool_call>|<\/tool_call>/.test(text);
+  if (hasAttachedMention && !hasToolCall) {
     return {
       isHallucination: true,
-      reason: "Model refused to execute command due to RLHF constraints. Forcing retry to break refusal.",
-      matchedPattern: "refusal_claim",
-    };
-  }
-
-  // Case 2: Completion claim without any tool call = hallucination
-  if (completionClaim) {
-    return {
-      isHallucination: true,
-      reason: "Response claims completion without outputting action tags. Gemini does not have direct filesystem access.",
-      matchedPattern: "completion_claim",
-    };
-  }
-
-  // Case 3: Strong file modification intent + very short response
-  // (model said "Sure, done!" without action tags)
-  if (fileIntent && text.trim().length < 200) {
-    return {
-      isHallucination: true,
-      reason: "Short response with file modification intent but no action tags detected. Gemini cannot modify files directly.",
-      matchedPattern: "file_intent_short",
+      reason: "Text mentions file modification but contains no valid tool call",
+      matchedPattern: "file_modification_intent_no_tool",
     };
   }
 
   return { isHallucination: false };
 }
+
+export { hasCompletionClaim, hasFileModificationIntent, hasRefusalClaim };
